@@ -1,6 +1,9 @@
 # 博丽神社游艺厅 · 东方同人小游戏合集
 
-> **Gensokyo Mini-Games Hub** — 纯前端、零后端、即开即玩的东方 Project 主题小游戏大厅，支持桌面与移动端，可直接部署到 GitHub Pages。
+> **Gensokyo Mini-Games Hub** — 纯前端、零后端、即开即玩的东方 Project 主题小游戏大厅，支持桌面与移动端，已部署至 GitHub Pages。
+>
+> - **在线游玩 (GitHub Pages)**：https://julywhisky0.github.io/gensokyo-arcade-hub/
+> - **项目仓库 (GitHub)**：https://github.com/JulyWhisky0/gensokyo-arcade-hub
 
 ## 收录游戏
 
@@ -12,11 +15,11 @@
 
 ## 核心特性
 
-- **博丽神社美学视觉**：朱红鸟居、鎏金纹饰、靛蓝夜空、樱花飘落与弹幕星辉动态背景，内置自定义阴阳玉 SVG 图标。
+- **博丽神社美学视觉**：朱红鸟居、注连绳与纸垂、暖光纸灯笼、旋转博丽大结界魔法阵与阴阳玉徽章、鎏金角饰卡片，以及 3D 飘樱、神社金色灵火与视差星辉动态画布（进入游戏舞台后自动暂停背景动画以释放全部性能）。
 - **赛钱箱战绩榜（本地存档）**：基于 `localStorage` 自动保存每款游戏的最高分、历史成绩与游玩次数，支持单项或全部清除。
 - **统一游艺厅 HUD**：实时分数、最高分、额外状态徽标、暂停/继续、一键重开、全局静音（跨游戏持久化同步）以及操作说明弹窗。
 - **Hash 路由**：使用 `#/` 与 `#/game/<id>` 路由，在 GitHub Pages 子路径下刷新永不 404。
-- **纯前端零外部素材依赖**：图形由 Canvas 2D 与 SVG 实时绘制，音效由 Web Audio API 实时合成。
+- **纯前端零外部素材依赖**：图形由 Canvas 2D 与 SVG 实时绘制，音效由 Web Audio API 实时合成（字体带有离线系统优雅回退）。
 
 ## 本地运行
 
@@ -51,12 +54,12 @@ npm run preview
 
 ## 部署到 GitHub Pages
 
-本项目已内置 GitHub Actions 自动部署配置（`.github/workflows/deploy.yml`），且 `vite.config.ts` 已配置 `base: './'`，无需修改仓库路径即可运行：
+本项目已内置 GitHub Actions 自动部署配置（`.github/workflows/deploy.yml`），且 `vite.config.ts` 已配置 `base: './'`，推送至 [`JulyWhisky0/gensokyo-arcade-hub`](https://github.com/JulyWhisky0/gensokyo-arcade-hub) 后即可自动发布至 [`https://julywhisky0.github.io/gensokyo-arcade-hub/`](https://julywhisky0.github.io/gensokyo-arcade-hub/)：
 
-1. 将本仓库推送到 GitHub 的 `main` 分支。
+1. 将本仓库推送到 GitHub 的 `main` 分支（`https://github.com/JulyWhisky0/gensokyo-arcade-hub`）。
 2. 在 GitHub 仓库页面打开 **Settings → Pages**。
 3. 在 **Build and deployment → Source** 中选择 **GitHub Actions**。
-4. 推送到 `main` 分支或手动触发 `Deploy to GitHub Pages` 工作流，即可自动构建并发布 `dist/` 到 GitHub Pages。
+4. 推送到 `main` 分支或手动触发 `Deploy to GitHub Pages` 工作流，即可自动构建并发布 `dist/` 到 `https://julywhisky0.github.io/gensokyo-arcade-hub/`。
 
 ## 版权声明
 

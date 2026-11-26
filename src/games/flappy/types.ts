@@ -61,6 +61,7 @@ export type ObstacleStyle = 'bamboo' | 'torii';
 export interface PipeObstacle {
   id: number;
   x: number;
+  prevX: number;
   width: number;
   gapY: number;
   gapHeight: number;
@@ -72,8 +73,10 @@ export interface PipeObstacle {
 export interface StarCollectible {
   id: number;
   x: number;
+  prevX: number;
   baseY: number;
   y: number;
+  prevY: number;
   radius: number;
   kind: 'power' | 'faith';
   collected: boolean;
@@ -85,11 +88,14 @@ export type ParticleKind =
   | 'maple'
   | 'sakura'
   | 'snowflake'
+  | 'iceCrystal'
   | 'feather'
   | 'sparkle'
   | 'ring'
+  | 'airRing'
   | 'starBurst'
-  | 'wind';
+  | 'wind'
+  | 'windRibbon';
 
 export interface Particle {
   x: number;
@@ -102,9 +108,10 @@ export interface Particle {
   life: number;
   maxLife: number;
   color: string;
-  secondaryColor?: string;
+  secondaryColor: string;
   kind: ParticleKind;
   gravity: number;
+  drag: number;
 }
 
 export interface FloatingText {
@@ -198,13 +205,25 @@ export function getSkyPhaseForScore(score: number): SkyPhaseLabel {
 export interface PlayerState {
   x: number;
   y: number;
+  prevY: number;
   vy: number;
   rotation: number;
+  prevRotation: number;
+  rotVelocity: number;
+  scaleX: number;
+  scaleY: number;
+  scaleVelX: number;
+  scaleVelY: number;
   wingPhase: number;
   wingBoost: number;
+  flapGlow: number;
+  scarfWave: number;
   orbAngle: number;
   radius: number;
   dizzyTime: number;
+  blinkTimer: number;
+  blinkDuration: number;
+  determinedTimer: number;
 }
 
 export interface RenderState {
@@ -214,13 +233,16 @@ export interface RenderState {
   pipes: PipeObstacle[];
   stars: StarCollectible[];
   particles: Particle[];
+  particleCount: number;
   floatingTexts: FloatingText[];
   score: number;
   bestScore: number;
   pipesCleared: number;
   starsCollected: number;
-  skyProgress: number; // 0 = Dawn, 1 = Twilight, 2 = Scarlet Mist Night
+  skyProgress: number; // 0 = Dawn, 1 = Golden Sunset, 2 = Scarlet Mist Night
   scrollDistance: number;
+  prevScrollDistance: number;
+  interpAlpha: number;
   speed: number;
   elapsed: number;
   flashAlpha: number;
@@ -230,29 +252,35 @@ export interface RenderState {
   phaseBannerTimer: number;
 }
 
-export const STAGE_WIDTH = 420;
+// Wider scenic Gensokyo stage for generous horizontal sightline & parallax vista
+export const STAGE_WIDTH = 520;
 export const STAGE_HEIGHT = 640;
-export const GROUND_HEIGHT = 84;
+export const GROUND_HEIGHT = 86;
 export const PLAYABLE_HEIGHT = STAGE_HEIGHT - GROUND_HEIGHT;
 
+export const MAX_PARTICLES = 160;
+
 export const PHYSICS = {
-  PLAYER_X: 118,
-  PLAYER_START_Y: 266,
-  HITBOX_RADIUS: 12.5,
-  GRAVITY: 1420,
-  FLAP_VELOCITY: -432,
-  MAX_FALL_SPEED: 560,
-  BASE_SPEED: 162,
-  MAX_SPEED: 208,
+  FIXED_DT: 1 / 120,
+  FLAP_BUFFER_WINDOW: 0.08, // 80ms crisp flap input buffer
+  FLAP_COOLDOWN: 0.042, // prevents accidental double-fire while keeping rapid taps razor-sharp
+  PLAYER_X: 138,
+  PLAYER_START_Y: 264,
+  HITBOX_RADIUS: 12.2, // forgiving slightly-inset circular hitbox
+  GRAVITY: 1410,
+  FLAP_VELOCITY: -430,
+  MAX_FALL_SPEED: 555,
+  BASE_SPEED: 164,
+  MAX_SPEED: 212,
   BASE_GAP: 154,
   MIN_GAP: 128,
-  PIPE_WIDTH: 64,
-  PIPE_CAP_OVERHANG: 5,
-  PIPE_CAP_HEIGHT: 24,
-  BASE_PIPE_SPACING: 234,
-  MIN_PIPE_SPACING: 218,
+  PIPE_WIDTH: 66,
+  PIPE_CAP_OVERHANG: 6,
+  PIPE_CAP_HEIGHT: 25,
+  BASE_PIPE_SPACING: 248,
+  MIN_PIPE_SPACING: 222,
   MIN_GAP_Y: 112,
   MAX_GAP_Y: PLAYABLE_HEIGHT - 112,
-  MAX_GAP_DELTA: 150,
-  HITSTOP_DURATION: 0.085,
+  MAX_GAP_DELTA: 148,
+  HITSTOP_DURATION: 0.08,
 } as const;

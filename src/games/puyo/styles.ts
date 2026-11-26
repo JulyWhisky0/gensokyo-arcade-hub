@@ -29,20 +29,51 @@ export const PUYO_STYLES = `
 
 .puyo-board-frame {
   position: relative;
-  border-radius: 12px;
-  padding: 4px;
-  background: linear-gradient(145deg, rgba(240, 194, 89, 0.72), rgba(200, 35, 51, 0.65), rgba(155, 78, 230, 0.65));
+  border-radius: 14px;
+  padding: 5px;
+  background: linear-gradient(
+    145deg,
+    rgba(255, 224, 130, 0.9),
+    rgba(208, 42, 68, 0.78) 38%,
+    rgba(134, 62, 214, 0.72) 68%,
+    rgba(245, 194, 89, 0.88)
+  );
   box-shadow:
-    0 12px 32px rgba(5, 2, 18, 0.72),
-    0 0 24px rgba(155, 78, 230, 0.22);
+    0 14px 36px rgba(4, 2, 16, 0.8),
+    0 0 28px rgba(155, 78, 230, 0.28),
+    0 0 0 1px rgba(255, 236, 175, 0.35),
+    inset 0 1px 0 rgba(255, 250, 225, 0.55);
   flex-shrink: 0;
   line-height: 0;
 }
 
+.puyo-board-frame::before,
+.puyo-board-frame::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  border-radius: 11px;
+}
+
+.puyo-board-frame::before {
+  inset: 2px;
+  border: 1px solid rgba(255, 232, 160, 0.42);
+}
+
+.puyo-board-frame::after {
+  inset: -2px;
+  border-radius: 16px;
+  background: radial-gradient(circle at 12% 8%, rgba(255, 235, 168, 0.36), transparent 28%),
+    radial-gradient(circle at 88% 92%, rgba(255, 214, 118, 0.3), transparent 28%);
+  opacity: 0.75;
+}
+
 .puyo-board-canvas {
+  position: relative;
+  z-index: 1;
   display: block;
   border-radius: 9px;
-  background: #120d29;
+  background: #0d0921;
   touch-action: none;
 }
 
@@ -56,11 +87,13 @@ export const PUYO_STYLES = `
 }
 
 .puyo-panel {
-  background: rgba(20, 14, 42, 0.86);
-  border: 1px solid rgba(240, 194, 89, 0.28);
-  border-radius: 10px;
+  background: linear-gradient(165deg, rgba(24, 16, 52, 0.92), rgba(14, 10, 34, 0.92));
+  border: 1px solid rgba(245, 198, 96, 0.34);
+  border-radius: 11px;
   padding: 8px 10px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 6px 16px rgba(5, 2, 18, 0.38),
+    inset 0 1px 0 rgba(255, 240, 196, 0.1);
 }
 
 .puyo-panel-label {

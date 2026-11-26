@@ -45,10 +45,11 @@ export const SUIKA_STYLES = `
   justify-content: center;
   border-radius: 18px;
   box-shadow:
-    0 18px 42px rgba(6, 4, 18, 0.65),
-    0 0 0 1px rgba(240, 194, 89, 0.28),
+    0 18px 44px rgba(8, 3, 20, 0.72),
+    0 0 0 1.5px rgba(240, 194, 89, 0.36),
+    0 0 28px rgba(200, 35, 51, 0.14),
     inset 0 0 28px rgba(240, 194, 89, 0.08);
-  background: radial-gradient(circle at 50% 25%, rgba(44, 32, 82, 0.85), rgba(16, 12, 34, 0.96));
+  background: radial-gradient(circle at 50% 24%, rgba(50, 32, 86, 0.88), rgba(16, 11, 34, 0.98));
   overflow: hidden;
 }
 
@@ -69,11 +70,14 @@ export const SUIKA_STYLES = `
 }
 
 .suika-card {
-  background: linear-gradient(180deg, rgba(31, 24, 58, 0.92), rgba(20, 15, 40, 0.94));
-  border: 1px solid rgba(240, 194, 89, 0.28);
+  position: relative;
+  background: linear-gradient(180deg, rgba(35, 24, 62, 0.94), rgba(19, 14, 38, 0.96));
+  border: 1px solid rgba(240, 194, 89, 0.32);
   border-radius: 14px;
   padding: 10px 12px;
-  box-shadow: 0 8px 22px rgba(5, 3, 16, 0.45);
+  box-shadow:
+    0 8px 22px rgba(5, 3, 16, 0.48),
+    inset 0 1px 0 rgba(255, 232, 168, 0.12);
   box-sizing: border-box;
 }
 
@@ -84,9 +88,11 @@ export const SUIKA_STYLES = `
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #f0c259;
+  color: #f5ca64;
   font-weight: 700;
   margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(240, 194, 89, 0.14);
 }
 
 .suika-next-wrap {
@@ -100,8 +106,9 @@ export const SUIKA_STYLES = `
   height: 62px;
   flex: 0 0 62px;
   border-radius: 12px;
-  background: radial-gradient(circle at 50% 45%, rgba(255, 255, 255, 0.08), rgba(10, 8, 22, 0.65));
-  border: 1px solid rgba(240, 194, 89, 0.22);
+  background: radial-gradient(circle at 50% 42%, rgba(245, 202, 100, 0.14), rgba(12, 8, 26, 0.72));
+  border: 1px solid rgba(240, 194, 89, 0.3);
+  box-shadow: inset 0 0 14px rgba(240, 194, 89, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -127,7 +134,7 @@ export const SUIKA_STYLES = `
 
 .suika-next-sub {
   font-size: 11px;
-  color: #c7bddf;
+  color: #cec4e6;
   margin-top: 2px;
   white-space: nowrap;
   overflow: hidden;
@@ -141,8 +148,8 @@ export const SUIKA_STYLES = `
 }
 
 .suika-stat-box {
-  background: rgba(12, 9, 26, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(14, 10, 30, 0.62), rgba(10, 7, 22, 0.72));
+  border: 1px solid rgba(240, 194, 89, 0.14);
   border-radius: 10px;
   padding: 6px 8px;
   text-align: center;
@@ -150,7 +157,7 @@ export const SUIKA_STYLES = `
 
 .suika-stat-label {
   font-size: 10px;
-  color: #aba0c9;
+  color: #b4a9d1;
 }
 
 .suika-stat-val {
@@ -162,10 +169,10 @@ export const SUIKA_STYLES = `
 }
 
 .suika-stat-val.accent {
-  color: #5ee69c;
+  color: #63ed9f;
 }
 
-/* Evolution chain */
+/* Refined Shrine Evolution Chain */
 .suika-evo-card {
   flex: 1 1 auto;
   min-height: 0;
@@ -188,30 +195,39 @@ export const SUIKA_STYLES = `
   align-items: center;
   gap: 6px;
   padding: 3px 6px;
-  border-radius: 8px;
-  background: rgba(12, 9, 28, 0.48);
+  border-radius: 9px;
+  background: rgba(12, 9, 28, 0.52);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  opacity: 0.56;
-  transition: opacity 0.2s ease, border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  opacity: 0.52;
+  transition: opacity 0.22s ease, border-color 0.22s ease, background 0.22s ease, transform 0.2s ease, box-shadow 0.22s ease;
 }
 
 .suika-evo-item.reached {
-  opacity: 1;
-  background: rgba(240, 194, 89, 0.1);
-  border-color: rgba(240, 194, 89, 0.32);
+  opacity: 0.96;
+  background: linear-gradient(135deg, rgba(240, 194, 89, 0.13), rgba(200, 35, 51, 0.08));
+  border-color: rgba(240, 194, 89, 0.36);
 }
 
 .suika-evo-item.highest {
   opacity: 1;
-  background: linear-gradient(90deg, rgba(46, 184, 107, 0.24), rgba(240, 194, 89, 0.18));
-  border-color: rgba(94, 230, 156, 0.65);
-  box-shadow: 0 0 10px rgba(94, 230, 156, 0.18);
+  background: linear-gradient(135deg, rgba(46, 184, 107, 0.28), rgba(240, 194, 89, 0.22));
+  border-color: rgba(102, 240, 162, 0.72);
+  box-shadow: 0 0 12px rgba(94, 230, 156, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transform: translateY(-0.5px);
 }
 
 .suika-evo-item.tier-suika {
   grid-column: 1 / -1;
   justify-content: center;
   padding: 4px 8px;
+  background: linear-gradient(90deg, rgba(30, 128, 72, 0.16), rgba(240, 194, 89, 0.14), rgba(200, 35, 51, 0.14));
+  border-color: rgba(240, 194, 89, 0.24);
+}
+
+.suika-evo-item.tier-suika.highest {
+  background: linear-gradient(90deg, rgba(46, 184, 107, 0.38), rgba(245, 202, 98, 0.32), rgba(235, 58, 92, 0.24));
+  border-color: rgba(255, 228, 112, 0.85);
+  box-shadow: 0 0 16px rgba(94, 230, 156, 0.36);
 }
 
 .suika-evo-icon {
@@ -219,6 +235,7 @@ export const SUIKA_STYLES = `
   height: 24px;
   flex: 0 0 24px;
   display: block;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
 }
 
 .suika-evo-item.tier-suika .suika-evo-icon {
@@ -231,13 +248,13 @@ export const SUIKA_STYLES = `
   min-width: 0;
   display: flex;
   flex-direction: column;
-  line-height: 1.1;
+  line-height: 1.12;
 }
 
 .suika-evo-name {
   font-size: 11px;
   font-weight: 700;
-  color: #f6effc;
+  color: #f8f2ff;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -245,13 +262,13 @@ export const SUIKA_STYLES = `
 
 .suika-evo-pts {
   font-size: 9px;
-  color: #f0c259;
-  opacity: 0.85;
+  color: #f5ca64;
+  opacity: 0.9;
 }
 
 .suika-controls-hint {
   font-size: 11px;
-  color: #bdb3d9;
+  color: #c2b8de;
   line-height: 1.45;
   text-align: center;
   padding-top: 2px;
@@ -263,12 +280,12 @@ export const SUIKA_STYLES = `
   margin: 0 1px;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(240, 194, 89, 0.24);
   font-size: 10px;
   color: #fff3cc;
 }
 
-/* Overlays inside canvas shell */
+/* Overlays inside canvas shell (preserves .suika-overlay.visible convention) */
 .suika-overlay {
   position: absolute;
   inset: 0;
@@ -276,7 +293,7 @@ export const SUIKA_STYLES = `
   align-items: center;
   justify-content: center;
   padding: 18px;
-  background: rgba(12, 9, 26, 0.76);
+  background: rgba(12, 8, 26, 0.76);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   z-index: 10;
@@ -293,12 +310,15 @@ export const SUIKA_STYLES = `
 .suika-modal {
   width: 100%;
   max-width: 316px;
-  background: linear-gradient(180deg, rgba(35, 26, 66, 0.96), rgba(20, 15, 42, 0.98));
-  border: 1.5px solid rgba(240, 194, 89, 0.55);
+  background: linear-gradient(180deg, rgba(39, 25, 68, 0.97), rgba(19, 14, 40, 0.98));
+  border: 1.5px solid rgba(240, 194, 89, 0.58);
   border-radius: 18px;
   padding: 20px 18px 18px;
   text-align: center;
-  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.65), 0 0 26px rgba(240, 194, 89, 0.14);
+  box-shadow:
+    0 20px 46px rgba(0, 0, 0, 0.68),
+    0 0 28px rgba(240, 194, 89, 0.16),
+    inset 0 1px 0 rgba(255, 232, 168, 0.18);
 }
 
 .suika-modal-badge {
@@ -308,9 +328,9 @@ export const SUIKA_STYLES = `
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
-  background: rgba(200, 35, 51, 0.26);
-  border: 1px solid rgba(240, 194, 89, 0.45);
-  color: #ffd97d;
+  background: rgba(204, 34, 54, 0.3);
+  border: 1px solid rgba(240, 194, 89, 0.5);
+  color: #ffde85;
   margin-bottom: 8px;
 }
 
@@ -326,7 +346,7 @@ export const SUIKA_STYLES = `
   margin: 6px 0 12px;
   font-size: 12.5px;
   line-height: 1.5;
-  color: #cfc6e8;
+  color: #d3caeb;
 }
 
 .suika-trophy-row {
@@ -337,8 +357,8 @@ export const SUIKA_STYLES = `
   margin: 10px 0 12px;
   padding: 8px 10px;
   border-radius: 12px;
-  background: rgba(12, 9, 26, 0.58);
-  border: 1px solid rgba(240, 194, 89, 0.24);
+  background: rgba(12, 9, 26, 0.6);
+  border: 1px solid rgba(240, 194, 89, 0.28);
 }
 
 .suika-trophy-canvas {
@@ -355,7 +375,7 @@ export const SUIKA_STYLES = `
 
 .suika-trophy-label {
   font-size: 10px;
-  color: #f0c259;
+  color: #f5ca64;
   font-weight: 700;
 }
 
@@ -367,7 +387,7 @@ export const SUIKA_STYLES = `
 
 .suika-trophy-epithet {
   font-size: 11px;
-  color: #c2b7de;
+  color: #c7bce3;
 }
 
 .suika-score-grid {
@@ -380,13 +400,13 @@ export const SUIKA_STYLES = `
 .suika-score-tile {
   padding: 8px;
   border-radius: 10px;
-  background: rgba(10, 8, 22, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 8, 22, 0.62);
+  border: 1px solid rgba(240, 194, 89, 0.14);
 }
 
 .suika-score-tile-label {
   font-size: 11px;
-  color: #aba0c9;
+  color: #b1a6cf;
 }
 
 .suika-score-tile-val {
@@ -431,9 +451,9 @@ export const SUIKA_STYLES = `
 }
 
 .suika-btn-primary {
-  background: linear-gradient(135deg, #2eb86b, #1d8a4e);
+  background: linear-gradient(135deg, #2ebd6e, #1b8c4e);
   color: #ffffff;
-  box-shadow: 0 6px 16px rgba(34, 158, 87, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  box-shadow: 0 6px 16px rgba(34, 158, 87, 0.44), inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .suika-btn-primary:hover {
@@ -443,7 +463,7 @@ export const SUIKA_STYLES = `
 .suika-btn-secondary {
   background: rgba(255, 255, 255, 0.1);
   color: #efe8fb;
-  border: 1px solid rgba(240, 194, 89, 0.32);
+  border: 1px solid rgba(240, 194, 89, 0.34);
 }
 
 .suika-btn-secondary:hover {

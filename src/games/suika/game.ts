@@ -1,18 +1,25 @@
 import type { GameInstance, GameMountContext } from '../../types/game';
 import { SuikaAudio } from './audio';
-import { SuikaPhysics } from './physics';
+import { SuikaPhysics, type OrbBody } from './physics';
 import { SuikaRenderer, renderOrbIcon } from './renderer';
 import { SUIKA_STYLES } from './styles';
 import {
   BOARD_HEIGHT,
   BOARD_WIDTH,
   DROP_COOLDOWN_MS,
+  DROP_EARLY_UNLOCK_MS,
   MAX_TIER,
   ORB_TIERS,
+  SPAWN_Y,
   pickNextSpawnTier,
 } from './tiers';
 
 type GamePhase = 'ready' | 'playing' | 'paused' | 'gameover';
+
+const KEY_INITIAL_SPEED = 120;
+const KEY_MAX_SPEED = 440;
+const KEY_ACCEL = 2500;
+const DROP_BUFFER_MS = 115;
 
 export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   ctx.container.innerHTML = '';
@@ -32,15 +39,24 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   let currentTier = pickNextSpawnTier(0);
   let nextTier = pickNextSpawnTier(1);
   let dropX = BOARD_WIDTH * 0.5;
+
+  // Snappy drop cadence & held-orb spring pop-in
   let dropCooldownMs = 0;
+  let timeSinceDropMs = DROP_COOLDOWN_MS;
+  let dropBufferMs = 0;
+  let lastDroppedOrb: OrbBody | null = null;
+  let heldPopProgress = 1;
+  let nearDangerFactor = 0;
+
   let elapsedTime = 0;
   let lastFrameTime = 0;
   let rafId = 0;
 
-  // Input tracking
+  // Smooth input tracking (zero-lag pointer + accel/decel keyboard)
   let keyLeft = false;
   let keyRight = false;
-  let activeTouchPointerId: number | null = null;
+  let keyVelX = 0;
+  let activePointerId: number | null = null;
 
   // --- Build Scoped DOM ---
   const root = document.createElement('div');
@@ -96,7 +112,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   `;
   canvasShell.appendChild(startOverlay);
 
-  // 2. Pause Overlay
+  // 2. Pause Overlay (preserves .suika-overlay.visible + [data-action="resume"] for top-bar sync)
   const pauseOverlay = document.createElement('div');
   pauseOverlay.className = 'suika-overlay';
   pauseOverlay.innerHTML = `
@@ -194,7 +210,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   evoCard.innerHTML = `
     <div class="suika-card-header">
       <span>进化图鉴 (11阶)</span>
-      <span>0 → 🍉</span>
+      <span>毛玉 → 🍉</span>
     </div>
     <div class="suika-evo-list" data-role="evo-list"></div>
   `;
@@ -203,7 +219,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   const controlsHint = document.createElement('div');
   controlsHint.className = 'suika-controls-hint';
   controlsHint.innerHTML = `
-    <span class="suika-kbd">鼠标/触控</span> 瞄准投放 ·
+    <span class="suika-kbd">点击/拖放</span> 瞄准投放 ·
     <span class="suika-kbd">A/D</span><span class="suika-kbd">←/→</span> 移动 ·
     <span class="suika-kbd">空格</span> 投放
   `;
@@ -234,7 +250,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     renderOrbIcon(startIconCanvas, MAX_TIER, 52);
   }
 
-  // Build Evolution Chain items with live canvas-rendered Touhou orb portraits
+  // Build Evolution Chain items with crisp high-DPI Touhou chibi portraits
   const evoItems: HTMLElement[] = [];
   if (evoListEl) {
     for (let t = 0; t < ORB_TIERS.length; t++) {
@@ -322,7 +338,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     }
   }
 
-  // --- Responsive Canvas Fit ---
+  // --- Responsive Canvas Fit + High-DPI Offscreen Sprite Cache Sync ---
   function updateCanvasSize(): void {
     if (destroyed) return;
     const availW = Math.max(200, stageCol.clientWidth - 4);
@@ -343,6 +359,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
       canvas.width = targetW;
       canvas.height = targetH;
     }
+    renderer.setPixelScale(targetW / BOARD_WIDTH);
   }
 
   const resizeObserver = new ResizeObserver(() => {
@@ -356,6 +373,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     audio.unlock();
     if (phase === 'ready') {
       phase = 'playing';
+      heldPopProgress = 0;
       lastFrameTime = performance.now();
       syncOverlays();
     }
@@ -374,9 +392,15 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     nextTier = pickNextSpawnTier(1);
     dropX = BOARD_WIDTH * 0.5;
     dropCooldownMs = 0;
-    activeTouchPointerId = null;
+    timeSinceDropMs = DROP_COOLDOWN_MS;
+    dropBufferMs = 0;
+    lastDroppedOrb = null;
+    heldPopProgress = 0;
+    nearDangerFactor = 0;
+    activePointerId = null;
     keyLeft = false;
     keyRight = false;
+    keyVelX = 0;
     phase = startImmediately ? 'playing' : 'ready';
     lastFrameTime = performance.now();
 
@@ -386,13 +410,21 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     syncOverlays();
   }
 
-  function triggerDrop(): void {
-    if (phase !== 'playing' || dropCooldownMs > 0) return;
+  function requestDrop(): void {
+    if (phase !== 'playing') return;
     audio.unlock();
+    if (dropCooldownMs <= 0) {
+      executeDrop();
+    } else {
+      // Buffer rapid clicks/taps so inputs right before unlock never feel eaten
+      dropBufferMs = DROP_BUFFER_MS;
+    }
+  }
 
+  function executeDrop(): void {
     const droppedTier = currentTier;
     dropX = physics.clampDropX(dropX, droppedTier);
-    physics.spawnDroppedOrb(dropX, droppedTier);
+    lastDroppedOrb = physics.spawnDroppedOrb(dropX, droppedTier);
     audio.playDrop(droppedTier);
 
     if (droppedTier > highestTier) {
@@ -406,6 +438,9 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     nextTier = pickNextSpawnTier(dropCount + 1);
     dropX = physics.clampDropX(dropX, currentTier);
     dropCooldownMs = DROP_COOLDOWN_MS;
+    timeSinceDropMs = 0;
+    dropBufferMs = 0;
+    heldPopProgress = 0;
     syncNextPreview();
   }
 
@@ -415,7 +450,9 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
       phase = 'paused';
       keyLeft = false;
       keyRight = false;
-      activeTouchPointerId = null;
+      keyVelX = 0;
+      activePointerId = null;
+      dropBufferMs = 0;
       syncOverlays();
     } else if (!paused && phase === 'paused') {
       phase = 'playing';
@@ -430,7 +467,9 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     phase = 'gameover';
     keyLeft = false;
     keyRight = false;
-    activeTouchPointerId = null;
+    keyVelX = 0;
+    activePointerId = null;
+    dropBufferMs = 0;
 
     audio.playGameOver();
 
@@ -448,7 +487,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     syncOverlays();
   }
 
-  // --- Pointer / Touch / Keyboard Handlers ---
+  // --- Ultra-Responsive Pointer / Touch / Keyboard Handlers ---
   function clientXToBoardX(clientX: number): number {
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0) return dropX;
@@ -462,52 +501,61 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
     e.preventDefault();
+    keyVelX = 0;
     dropX = clientXToBoardX(e.clientX);
-
-    if (e.pointerType === 'mouse') {
-      triggerDrop();
-    } else {
-      activeTouchPointerId = e.pointerId;
+    activePointerId = e.pointerId;
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch {
+      // Synthetic pointer events may not support capture
     }
   };
 
   const onWindowPointerMove = (e: PointerEvent): void => {
     if (phase !== 'playing') return;
-    if (e.pointerType === 'mouse') {
+    if (activePointerId !== null && e.pointerId === activePointerId) {
+      keyVelX = 0;
+      dropX = clientXToBoardX(e.clientX);
+    } else if (e.pointerType === 'mouse' && activePointerId === null) {
       const rect = canvas.getBoundingClientRect();
       if (
-        e.clientX >= rect.left - 32 &&
-        e.clientX <= rect.right + 32 &&
-        e.clientY >= rect.top - 24 &&
-        e.clientY <= rect.bottom + 24
+        e.clientX >= rect.left - 36 &&
+        e.clientX <= rect.right + 36 &&
+        e.clientY >= rect.top - 28 &&
+        e.clientY <= rect.bottom + 28
       ) {
+        keyVelX = 0;
         dropX = clientXToBoardX(e.clientX);
       }
-    } else if (activeTouchPointerId === e.pointerId) {
-      dropX = clientXToBoardX(e.clientX);
     }
   };
 
   const onWindowPointerUp = (e: PointerEvent): void => {
-    if (activeTouchPointerId !== null && e.pointerId === activeTouchPointerId) {
-      activeTouchPointerId = null;
+    if (activePointerId !== null && e.pointerId === activePointerId) {
+      activePointerId = null;
+      try {
+        if (canvas.hasPointerCapture(e.pointerId)) {
+          canvas.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // Ignore if already released
+      }
       if (phase === 'playing') {
         dropX = clientXToBoardX(e.clientX);
-        triggerDrop();
+        requestDrop();
       }
     }
   };
 
   const onWindowPointerCancel = (e: PointerEvent): void => {
-    if (activeTouchPointerId !== null && e.pointerId === activeTouchPointerId) {
-      activeTouchPointerId = null;
+    if (activePointerId !== null && e.pointerId === activePointerId) {
+      activePointerId = null;
     }
   };
 
   const onWindowKeyDown = (e: KeyboardEvent): void => {
     if (destroyed) return;
 
-    // Ignore if user is typing in an external search/input element
     const target = e.target as HTMLElement | null;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
 
@@ -519,11 +567,12 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
       if (phase === 'playing') e.preventDefault();
     } else if (e.code === 'Space' || e.code === 'ArrowDown' || e.code === 'Enter') {
       e.preventDefault();
+      if (e.repeat) return;
       audio.unlock();
       if (phase === 'ready') {
         startGame();
       } else if (phase === 'playing') {
-        triggerDrop();
+        requestDrop();
       } else if (phase === 'gameover' && (e.code === 'Enter' || e.code === 'Space')) {
         resetRun(true);
       }
@@ -549,7 +598,9 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   const onWindowBlur = (): void => {
     keyLeft = false;
     keyRight = false;
-    activeTouchPointerId = null;
+    keyVelX = 0;
+    activePointerId = null;
+    dropBufferMs = 0;
   };
 
   const onRootClick = (e: MouseEvent): void => {
@@ -592,19 +643,66 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
 
     if (phase === 'playing') {
       elapsedTime += dt;
+      const dtMs = dt * 1000;
+      timeSinceDropMs += dtMs;
 
       if (dropCooldownMs > 0) {
-        dropCooldownMs = Math.max(0, dropCooldownMs - dt * 1000);
+        dropCooldownMs = Math.max(0, dropCooldownMs - dtMs);
+
+        // Early unlock once the dropped orb cleanly clears the spawn zone (after brief guard)
+        if (dropCooldownMs > 0 && timeSinceDropMs >= DROP_EARLY_UNLOCK_MS) {
+          const cleared =
+            !lastDroppedOrb ||
+            !physics.orbs.includes(lastDroppedOrb) ||
+            lastDroppedOrb.y - lastDroppedOrb.radius >
+              SPAWN_Y + ORB_TIERS[currentTier].radius + 8;
+          if (cleared) {
+            dropCooldownMs = 0;
+          }
+        }
       }
 
-      // Keyboard smooth horizontal movement
+      // Advance held-orb spring pop-in animation once orb becomes ready
+      if (dropCooldownMs <= 0 && heldPopProgress < 1) {
+        heldPopProgress = Math.min(1, heldPopProgress + dt * 4.4);
+      }
+
+      // Fire buffered drop the exact frame cooldown unlocks
+      if (dropBufferMs > 0) {
+        dropBufferMs = Math.max(0, dropBufferMs - dtMs);
+        if (dropCooldownMs <= 0) {
+          executeDrop();
+        }
+      }
+
+      // Smooth keyboard acceleration/deceleration curve
       const moveDir = (keyRight ? 1 : 0) - (keyLeft ? 1 : 0);
       if (moveDir !== 0) {
-        dropX = physics.clampDropX(dropX + moveDir * 320 * dt, currentTier);
+        if (keyVelX * moveDir <= 0 || Math.abs(keyVelX) < KEY_INITIAL_SPEED) {
+          keyVelX = moveDir * KEY_INITIAL_SPEED;
+        } else {
+          keyVelX += moveDir * KEY_ACCEL * dt;
+          if (Math.abs(keyVelX) > KEY_MAX_SPEED) {
+            keyVelX = moveDir * KEY_MAX_SPEED;
+          }
+        }
+      } else if (Math.abs(keyVelX) > 0.1) {
+        keyVelX *= Math.pow(0.00012, dt);
+        if (Math.abs(keyVelX) < 4) keyVelX = 0;
+      }
+
+      if (keyVelX !== 0) {
+        const nextX = dropX + keyVelX * dt;
+        const clampedX = physics.clampDropX(nextX, currentTier);
+        if (clampedX !== nextX) {
+          keyVelX = 0;
+        }
+        dropX = clampedX;
       }
 
       // Advance fixed-timestep circle physics
       const res = physics.update(dt);
+      nearDangerFactor = res.nearDangerFactor;
 
       if (res.strongestBounce > 0.28) {
         audio.playBounce(res.strongestBounce);
@@ -614,7 +712,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
         audio.playDangerTick(res.dangerWarningTick);
       }
 
-      // Process merge events (score, SFX, particles, combo, highest tier)
+      // Process merge events
       if (res.merges.length > 0) {
         let bestComboLabel: string | undefined;
         let tierUpdated = false;
@@ -654,7 +752,6 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
         handleGameOver();
       }
     } else if (phase === 'ready' || phase === 'gameover') {
-      // Gentle ambient motion while idle on overlay
       elapsedTime += dt;
       renderer.updateEffects(dt);
     }
@@ -671,16 +768,19 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
         heldTier: currentTier,
         dropX,
         canDrop: dropCooldownMs <= 0 && phase === 'playing',
+        isAiming: activePointerId !== null && phase === 'playing',
+        heldPopProgress,
         showGuide: phase === 'playing' || phase === 'ready',
         predictedLandingY: predictedY,
         dangerTimer: physics.dangerTimer,
+        nearDangerFactor,
         comboCount: physics.comboCount,
         time: elapsedTime,
       });
     }
   }
 
-  // Initial sync & kick off loop
+  // Initial sync & start RAF loop
   syncNextPreview();
   syncEvolutionChain();
   syncScoreHUD();

@@ -143,6 +143,7 @@ export interface SpellCardBanner {
   caster: string;
   primaryColor: string;
   secondaryColor: string;
+  motif: PuyoTheme['motif'];
   timer: number;
   duration: number;
 }
@@ -152,6 +153,7 @@ export interface SpellCardSpec {
   caster: string;
   primaryColor: string;
   secondaryColor: string;
+  motif: PuyoTheme['motif'];
 }
 
 export function getSpellCardForChain(chain: number): SpellCardSpec | null {
@@ -162,6 +164,7 @@ export function getSpellCardForChain(chain: number): SpellCardSpec | null {
       caster: '雾雨魔理沙',
       primaryColor: '#f5b82e',
       secondaryColor: '#fff0a6',
+      motif: 'star',
     };
   }
   if (chain === 3) {
@@ -170,6 +173,7 @@ export function getSpellCardForChain(chain: number): SpellCardSpec | null {
       caster: '琪露诺',
       primaryColor: '#29b6f6',
       secondaryColor: '#c7f4ff',
+      motif: 'crystal',
     };
   }
   if (chain === 4) {
@@ -178,6 +182,7 @@ export function getSpellCardForChain(chain: number): SpellCardSpec | null {
       caster: '博丽灵梦',
       primaryColor: '#e83b54',
       secondaryColor: '#ffd4a3',
+      motif: 'yinyang',
     };
   }
   if (chain === 5) {
@@ -186,6 +191,7 @@ export function getSpellCardForChain(chain: number): SpellCardSpec | null {
       caster: '雾雨魔理沙',
       primaryColor: '#ff7043',
       secondaryColor: '#fff59d',
+      motif: 'star',
     };
   }
   if (chain === 6) {
@@ -194,6 +200,7 @@ export function getSpellCardForChain(chain: number): SpellCardSpec | null {
       caster: '帕秋莉·诺蕾姬',
       primaryColor: '#a855f7',
       secondaryColor: '#f0abfc',
+      motif: 'moon',
     };
   }
   return {
@@ -201,13 +208,15 @@ export function getSpellCardForChain(chain: number): SpellCardSpec | null {
     caster: '博丽灵梦 · 极彩',
     primaryColor: '#f43f5e',
     secondaryColor: '#fde047',
+    motif: 'yinyang',
   };
 }
 
 export interface GridCell {
   color: PuyoColor;
-  squish: number; // 0..1 remaining landing wobble energy
+  squish: number; // 0..1.4 remaining damped-spring wobble energy
   squishPhase: number;
+  squishFreq: number; // spring angular speed for varied organic feel
 }
 
 export interface PuyoPairColors {
@@ -234,11 +243,17 @@ export interface ActivePair {
   fallFrac: number; // 0..1 sub-cell vertical offset
   lockTimer: number; // ms spent grounded
   lockResets: number;
+  softDropGroundMs: number; // ms holding down while grounded for crisp soft-drop lock
   // Smooth visual interpolation fields
   renderCol: number;
-  renderAngle: number; // radians: 0 = Up (-PI/2), PI/2 = Right, PI = Down, -PI/2 = Left
+  renderRow: number; // smooth continuous vertical row (interpolates kicks & spawn)
+  renderAngle: number; // radians: 0 = Up, PI/2 = Right, PI = Down, -PI/2 = Left
+  targetAngle: number;
   quickTurnTimer: number; // ms window to trigger 180 flip when squeezed
   bumpOffsetX: number; // visual bounce when wall-blocked
+  touchSquish: number; // 0..1 subtle elastic squish when landing/rotating while grounded
+  touchSquishPhase: number;
+  wasGrounded: boolean;
 }
 
 export interface FallingPuyo {

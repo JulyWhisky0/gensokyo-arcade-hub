@@ -283,7 +283,7 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
     );
 
     renderer.resizeBoard(boardCanvas, cellSize);
-    renderer.renderPreview(previewCanvas, engine.queue);
+    renderer.renderPreview(previewCanvas, engine.queue, engine.elapsedMs);
   };
 
   let resizeObserver: ResizeObserver | null = null;
@@ -381,6 +381,7 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
     btn.addEventListener('pointerup', handleRelease);
     btn.addEventListener('pointercancel', handleRelease);
     btn.addEventListener('lostpointercapture', handleRelease);
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   // ==================== KEYBOARD BINDINGS ====================
@@ -488,19 +489,21 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
 
   let rafId = 0;
   let lastTime = performance.now();
+  let lastPreviewRenderMs = -1000;
 
   const frame = (now: number): void => {
     if (destroyed) return;
-    const dt = Math.max(0, now - lastTime);
+    const dt = Math.min(50, Math.max(0, now - lastTime));
     lastTime = now;
 
     engine.update(dt);
     renderer.renderBoard(boardCanvas, engine);
 
     const sig = engine.queue.map((q) => `${q.pivot}${q.child}`).join('-');
-    if (sig !== lastQueueSig) {
+    if (sig !== lastQueueSig || engine.elapsedMs - lastPreviewRenderMs >= 66) {
       lastQueueSig = sig;
-      renderer.renderPreview(previewCanvas, engine.queue);
+      lastPreviewRenderMs = engine.elapsedMs;
+      renderer.renderPreview(previewCanvas, engine.queue, engine.elapsedMs);
     }
 
     rafId = window.requestAnimationFrame(frame);

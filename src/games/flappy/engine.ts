@@ -5,6 +5,7 @@ import { FLAPPY_STYLES } from './styles';
 import {
   CHARACTERS,
   CHARACTER_MAP,
+  MAX_PARTICLES,
   PHYSICS,
   PLAYABLE_HEIGHT,
   STAGE_HEIGHT,
@@ -12,6 +13,8 @@ import {
   getMedalForScore,
   getSkyPhaseForScore,
   type CharacterId,
+  type Particle,
+  type ParticleKind,
   type PipeObstacle,
   type RenderState,
 } from './types';
@@ -35,6 +38,29 @@ function circleIntersectsRect(
   const dx = cx - closestX;
   const dy = cy - closestY;
   return dx * dx + dy * dy < cr * cr;
+}
+
+function createParticlePool(): Particle[] {
+  const pool: Particle[] = new Array(MAX_PARTICLES);
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    pool[i] = {
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0,
+      size: 4,
+      rotation: 0,
+      vRot: 0,
+      life: 0,
+      maxLife: 1,
+      color: '#ffffff',
+      secondaryColor: '#ffffff',
+      kind: 'sparkle',
+      gravity: 0,
+      drag: 1,
+    };
+  }
+  return pool;
 }
 
 class FlappyEngine implements GameInstance {
@@ -68,6 +94,9 @@ class FlappyEngine implements GameInstance {
   private state: RenderState;
   private rafId: number | null = null;
   private lastTimestamp = 0;
+  private accumulator = 0;
+  private flapBufferTimer = 0;
+  private flapCooldownTimer = 0;
   private hitstopTimer = 0;
   private gameOverGuardTimer = 0;
   private scorePopTimer = 0;
@@ -79,6 +108,7 @@ class FlappyEngine implements GameInstance {
   private runSaved = false;
   private isNewBest = false;
   private destroyed = false;
+  private particleOverwriteCursor = 0;
 
   private resizeObserver: ResizeObserver | null = null;
   private cleanupListeners: Array<() => void> = [];
@@ -88,7 +118,7 @@ class FlappyEngine implements GameInstance {
     this.audio = new FlappyAudio(ctx.isMuted, ctx.onMuteChange);
 
     const initialBest = ctx.getBestScore();
-    this.state = this.createInitialState('aya', initialBest);
+    this.state = this.createInitialState('aya', initialBest, createParticlePool());
 
     // Mount isolated DOM tree & scoped styles inside ctx.container
     ctx.container.innerHTML = '';
@@ -105,7 +135,7 @@ class FlappyEngine implements GameInstance {
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'flappy-canvas';
-    const c2d = this.canvas.getContext('2d');
+    const c2d = this.canvas.getContext('2d', { alpha: false });
     if (!c2d) {
       throw new Error('Failed to initialize 2D canvas context for Flappy Gensokyo.');
     }
@@ -128,7 +158,7 @@ class FlappyEngine implements GameInstance {
     this.readyOverlayEl = this.buildReadyOverlay();
     this.stageEl.appendChild(this.readyOverlayEl);
 
-    // Pause Overlay
+    // Pause Overlay (preserves .flappy-modal-overlay:not(.hidden) with PAUSED)
     this.pauseOverlayEl = this.buildPauseOverlay();
     this.stageEl.appendChild(this.pauseOverlayEl);
 
@@ -157,24 +187,41 @@ class FlappyEngine implements GameInstance {
     this.rafId = requestAnimationFrame(this.loop);
   }
 
-  private createInitialState(character: CharacterId, bestScore: number): RenderState {
+  private createInitialState(
+    character: CharacterId,
+    bestScore: number,
+    particlePool: Particle[],
+  ): RenderState {
     return {
       phase: 'ready',
       character,
       player: {
         x: PHYSICS.PLAYER_X,
         y: PHYSICS.PLAYER_START_Y,
+        prevY: PHYSICS.PLAYER_START_Y,
         vy: 0,
         rotation: 0,
+        prevRotation: 0,
+        rotVelocity: 0,
+        scaleX: 1,
+        scaleY: 1,
+        scaleVelX: 0,
+        scaleVelY: 0,
         wingPhase: 0,
         wingBoost: 0,
+        flapGlow: 0,
+        scarfWave: 0,
         orbAngle: 0,
         radius: PHYSICS.HITBOX_RADIUS,
         dizzyTime: 0,
+        blinkTimer: 2.8,
+        blinkDuration: 0,
+        determinedTimer: 0,
       },
       pipes: [],
       stars: [],
-      particles: [],
+      particles: particlePool,
+      particleCount: 0,
       floatingTexts: [],
       score: 0,
       bestScore,
@@ -182,6 +229,8 @@ class FlappyEngine implements GameInstance {
       starsCollected: 0,
       skyProgress: 0,
       scrollDistance: 0,
+      prevScrollDistance: 0,
+      interpAlpha: 1,
       speed: PHYSICS.BASE_SPEED,
       elapsed: 0,
       flashAlpha: 0,
@@ -423,18 +472,18 @@ class FlappyEngine implements GameInstance {
   }
 
   private bindEvents(): void {
+    // Instant zero-latency response on mouse, touch, and pen via pointerdown
     const onPointerDown = (ev: PointerEvent) => {
       if (this.destroyed) return;
       if (ev.button !== 0 && ev.pointerType === 'mouse') return;
       if (this.state.phase === 'ready' || this.state.phase === 'playing') {
         ev.preventDefault();
-        this.flap();
+        this.requestFlap();
       }
     };
 
     const onKeyDown = (ev: KeyboardEvent) => {
       if (this.destroyed) return;
-      // Ignore keys if user is typing in an input somewhere outside
       const target = ev.target as HTMLElement | null;
       if (
         target &&
@@ -447,7 +496,7 @@ class FlappyEngine implements GameInstance {
         if (this.state.phase === 'ready' || this.state.phase === 'playing') {
           ev.preventDefault();
           if (!ev.repeat) {
-            this.flap();
+            this.requestFlap();
           }
         }
         return;
@@ -474,7 +523,7 @@ class FlappyEngine implements GameInstance {
 
     const onWindowResize = () => this.resizeCanvas();
 
-    this.stageEl.addEventListener('pointerdown', onPointerDown);
+    this.stageEl.addEventListener('pointerdown', onPointerDown, { passive: false });
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', onWindowResize);
 
@@ -495,7 +544,7 @@ class FlappyEngine implements GameInstance {
     const availH = Math.max(0, this.rootEl.clientHeight - 12);
     if (availW > 0 && availH > 0) {
       const ratio = STAGE_WIDTH / STAGE_HEIGHT;
-      let fitH = Math.min(availH, 760);
+      let fitH = Math.min(availH, 780);
       let fitW = fitH * ratio;
       if (fitW > availW) {
         fitW = availW;
@@ -524,13 +573,26 @@ class FlappyEngine implements GameInstance {
       btn.classList.toggle('active', cid === id);
     }
 
-    // Celebrate character pick with a signature burst!
-    this.spawnFlapBurst(this.state.player.x, this.state.player.y, id, 9);
+    // Playful character swap pop + signature flourish
+    const p = this.state.player;
+    p.scaleX = 0.86;
+    p.scaleY = 1.18;
+    p.scaleVelX = 1.4;
+    p.scaleVelY = -1.5;
+    p.flapGlow = 0.85;
+    this.spawnFlapBurst(p.x, p.y, id, 9, true);
     this.updatePhasePill();
     this.notifyHostScore();
   }
 
-  private flap(): void {
+  private requestFlap(): void {
+    this.flapBufferTimer = PHYSICS.FLAP_BUFFER_WINDOW;
+    if (this.state.phase === 'ready' || this.flapCooldownTimer <= 0) {
+      this.executeFlap();
+    }
+  }
+
+  private executeFlap(): void {
     if (this.state.phase === 'ready') {
       this.state.phase = 'playing';
       this.pipesSpawned = 0;
@@ -541,11 +603,27 @@ class FlappyEngine implements GameInstance {
 
     if (this.state.phase !== 'playing') return;
 
-    this.state.player.vy = PHYSICS.FLAP_VELOCITY;
-    this.state.player.wingBoost = 1;
-    this.state.player.wingPhase = 0.6;
+    this.flapBufferTimer = 0;
+    this.flapCooldownTimer = PHYSICS.FLAP_COOLDOWN;
+
+    const p = this.state.player;
+    p.vy = PHYSICS.FLAP_VELOCITY;
+    p.wingBoost = 1;
+    p.wingPhase = 0.45;
+    p.flapGlow = 1;
+    p.determinedTimer = 0.36;
+
+    // Snappy elastic squash-and-stretch impulse on upward lift
+    p.scaleX = 0.85;
+    p.scaleY = 1.21;
+    p.scaleVelX = 1.35;
+    p.scaleVelY = -1.55;
+
+    // Gentle upward angular impulse to kick critically-damped pitch smoothly upward
+    p.rotVelocity = Math.min(p.rotVelocity, -5.2);
+
     this.audio.playFlap(this.state.character);
-    this.spawnFlapBurst(this.state.player.x - 10, this.state.player.y + 4, this.state.character, 6);
+    this.spawnFlapBurst(p.x - 10, p.y + 5, this.state.character, 7, true);
   }
 
   private getDifficultyParams(score: number): {
@@ -553,7 +631,6 @@ class FlappyEngine implements GameInstance {
     gapHeight: number;
     spacing: number;
   } {
-    // Comfortable 0..14, smooth gentle ramp across 15, 30, 50 while staying 100% fair
     let tierProgress = 0;
     if (score >= 50) {
       tierProgress = 1;
@@ -577,8 +654,8 @@ class FlappyEngine implements GameInstance {
   private spawnInitialPipes(): void {
     this.state.pipes = [];
     this.state.stars = [];
-    // Comfortable runway before first obstacle
-    const firstX = STAGE_WIDTH + 96;
+    // Comfortable scenic sightline before first obstacle glides into view
+    const firstX = STAGE_WIDTH + 68;
     this.spawnPipeAt(firstX, null);
     const { spacing } = this.getDifficultyParams(0);
     this.spawnPipeAt(firstX + spacing, this.state.pipes[0]);
@@ -586,13 +663,12 @@ class FlappyEngine implements GameInstance {
 
   private spawnPipeAt(x: number, prevPipe: PipeObstacle | null): void {
     const { gapHeight } = this.getDifficultyParams(this.state.score);
-    const minY = Math.max(PHYSICS.MIN_GAP_Y, gapHeight * 0.5 + 34);
-    const maxY = Math.min(PHYSICS.MAX_GAP_Y, PLAYABLE_HEIGHT - gapHeight * 0.5 - 34);
+    const minY = Math.max(PHYSICS.MIN_GAP_Y, gapHeight * 0.5 + 36);
+    const maxY = Math.min(PHYSICS.MAX_GAP_Y, PLAYABLE_HEIGHT - gapHeight * 0.5 - 36);
 
     let gapY: number;
     if (this.pipesSpawned === 0) {
-      // Friendly first pipe near center
-      gapY = PLAYABLE_HEIGHT * 0.48 + (Math.random() * 64 - 32);
+      gapY = PLAYABLE_HEIGHT * 0.48 + (Math.random() * 58 - 29);
     } else {
       const low = Math.max(minY, this.lastGapY - PHYSICS.MAX_GAP_DELTA);
       const high = Math.min(maxY, this.lastGapY + PHYSICS.MAX_GAP_DELTA);
@@ -601,7 +677,6 @@ class FlappyEngine implements GameInstance {
     gapY = clamp(gapY, minY, maxY);
     this.lastGapY = gapY;
 
-    // Stylized mix: Bamboo pillars & Crimson Torii Shrine pillars!
     const style =
       this.pipesSpawned % 3 === 1 || (this.state.score >= 25 && this.pipesSpawned % 2 === 1)
         ? 'torii'
@@ -610,6 +685,7 @@ class FlappyEngine implements GameInstance {
     const pipe: PipeObstacle = {
       id: this.nextEntityId++,
       x,
+      prevX: x,
       width: PHYSICS.PIPE_WIDTH,
       gapY,
       gapHeight,
@@ -620,36 +696,39 @@ class FlappyEngine implements GameInstance {
     this.state.pipes.push(pipe);
     this.pipesSpawned++;
 
-    // Periodically spawn a floating Touhou P点 / 信仰星 in a safe-but-spicy spot!
+    // Periodically spawn a floating Touhou [P] Power or [★] Faith Star in a fair, enticing spot
     if (this.pipesSpawned >= 2 && this.pipesSpawned % 2 === 0) {
       const kind: 'power' | 'faith' = this.pipesSpawned % 4 === 0 ? 'faith' : 'power';
       if (prevPipe && Math.random() < 0.65) {
-        // Midway along flight corridor between previous pipe and new pipe
         const midX = (prevPipe.x + prevPipe.width + pipe.x) * 0.5;
         const avgY = (prevPipe.gapY + pipe.gapY) * 0.5;
-        const spicyOffset = (Math.random() < 0.5 ? -1 : 1) * (18 + Math.random() * 20);
+        const spicyOffset = (Math.random() < 0.5 ? -1 : 1) * (16 + Math.random() * 20);
         const sy = clamp(avgY + spicyOffset, 72, PLAYABLE_HEIGHT - 76);
         this.state.stars.push({
           id: this.nextEntityId++,
           x: midX,
+          prevX: midX,
           baseY: sy,
           y: sy,
-          radius: 14,
+          prevY: sy,
+          radius: 14.5,
           kind,
           collected: false,
           bobPhase: Math.random() * Math.PI * 2,
           spin: 0,
         });
       } else {
-        // Slightly off-center inside the pipe gap (always safely reachable!)
         const offset = (Math.random() < 0.5 ? -1 : 1) * Math.min(22, gapHeight * 0.16);
         const sy = clamp(gapY + offset, 76, PLAYABLE_HEIGHT - 76);
+        const sx = pipe.x + pipe.width * 0.5;
         this.state.stars.push({
           id: this.nextEntityId++,
-          x: pipe.x + pipe.width * 0.5,
+          x: sx,
+          prevX: sx,
           baseY: sy,
           y: sy,
-          radius: 14,
+          prevY: sy,
+          radius: 14.5,
           kind,
           collected: false,
           bobPhase: Math.random() * Math.PI * 2,
@@ -673,21 +752,20 @@ class FlappyEngine implements GameInstance {
     this.state.floatingTexts.push({
       x: popupX,
       y: popupY,
-      vy: -56,
+      vy: -58,
       text: label,
       color,
       strokeColor: '#2a0c18',
-      scale: points >= 2 ? 1.12 : 0.95,
-      life: 0.85,
-      maxLife: 0.85,
+      scale: points >= 2 ? 1.15 : 0.96,
+      life: 0.88,
+      maxLife: 0.88,
     });
 
-    // Check sky phase milestone transitions (Dawn -> Twilight -> Scarlet Mist Night)
     const phaseInfo = getSkyPhaseForScore(this.state.score);
     if (phaseInfo.id !== this.lastSkyPhaseId) {
       this.lastSkyPhaseId = phaseInfo.id;
       this.state.phaseBannerText = phaseInfo.banner;
-      this.state.phaseBannerTimer = 2.4;
+      this.state.phaseBannerTimer = 2.45;
       this.audio.playPhaseShift();
     }
 
@@ -699,20 +777,27 @@ class FlappyEngine implements GameInstance {
     if (this.state.phase === 'dying' || this.state.phase === 'gameover') return;
 
     this.state.phase = 'dying';
+    this.flapBufferTimer = 0;
     this.hitstopTimer = PHYSICS.HITSTOP_DURATION;
-    this.state.flashAlpha = 0.78;
+    this.state.flashAlpha = 0.76;
     this.state.shakeTime = 0.28;
-    this.state.shakeIntensity = 7;
-    this.state.player.vy = -210; // Small comical hop before tumbling
-    this.state.player.dizzyTime = 0;
+    this.state.shakeIntensity = 7.5;
+
+    const p = this.state.player;
+    p.vy = -215;
+    p.dizzyTime = 0;
+    p.scaleX = 1.24;
+    p.scaleY = 0.78;
+    p.scaleVelX = -1.6;
+    p.scaleVelY = 1.5;
 
     this.audio.playCrash();
-    this.spawnCrashBurst(this.state.player.x, this.state.player.y);
+    this.spawnCrashBurst(p.x, p.y);
     this.finalizeRunOnce();
 
-    // If already touching ground, enter gameover quickly
-    if (this.state.player.y >= PLAYABLE_HEIGHT - this.state.player.radius - 2) {
-      this.state.player.y = PLAYABLE_HEIGHT - this.state.player.radius;
+    if (p.y >= PLAYABLE_HEIGHT - p.radius - 2) {
+      p.y = PLAYABLE_HEIGHT - p.radius;
+      p.prevY = p.y;
       this.enterGameOver();
     }
   }
@@ -733,7 +818,7 @@ class FlappyEngine implements GameInstance {
   private enterGameOver(): void {
     if (this.state.phase === 'gameover') return;
     this.state.phase = 'gameover';
-    this.gameOverGuardTimer = 0.34;
+    this.gameOverGuardTimer = 0.32;
     this.finalizeRunOnce();
     this.populateGameOverCard();
     this.syncOverlays();
@@ -787,75 +872,153 @@ class FlappyEngine implements GameInstance {
     this.scoreLiveEl.style.opacity = this.state.phase === 'ready' ? '0' : '1';
   }
 
-  private spawnFlapBurst(x: number, y: number, character: CharacterId, count: number): void {
+  // Zero-GC pooled particle emitter
+  private emitParticle(
+    x: number,
+    y: number,
+    vx: number,
+    vy: number,
+    size: number,
+    rotation: number,
+    vRot: number,
+    life: number,
+    color: string,
+    secondaryColor: string,
+    kind: ParticleKind,
+    gravity: number,
+    drag = 1,
+  ): void {
+    let idx: number;
+    if (this.state.particleCount < MAX_PARTICLES) {
+      idx = this.state.particleCount++;
+    } else {
+      idx = this.particleOverwriteCursor;
+      this.particleOverwriteCursor = (this.particleOverwriteCursor + 1) % MAX_PARTICLES;
+    }
+
+    const p = this.state.particles[idx];
+    p.x = x;
+    p.y = y;
+    p.vx = vx;
+    p.vy = vy;
+    p.size = size;
+    p.rotation = rotation;
+    p.vRot = vRot;
+    p.life = life;
+    p.maxLife = life;
+    p.color = color;
+    p.secondaryColor = secondaryColor;
+    p.kind = kind;
+    p.gravity = gravity;
+    p.drag = drag;
+  }
+
+  private spawnFlapBurst(
+    x: number,
+    y: number,
+    character: CharacterId,
+    count: number,
+    withAirRing: boolean,
+  ): void {
+    // Crisp white wind-gust air ring on every energetic flap!
+    if (withAirRing) {
+      this.emitParticle(
+        x + 4,
+        y + 8,
+        -68,
+        36,
+        15,
+        -0.16,
+        0,
+        0.26,
+        character === 'cirno'
+          ? 'rgba(224, 247, 255, 0.92)'
+          : character === 'reimu'
+            ? 'rgba(255, 241, 244, 0.9)'
+            : 'rgba(255, 252, 240, 0.92)',
+        '#ffffff',
+        'airRing',
+        0,
+        0.92,
+      );
+    }
+
     if (character === 'aya') {
       const leafColors = ['#ef4444', '#f97316', '#f59e0b', '#dc2626'];
       for (let i = 0; i < count; i++) {
-        this.state.particles.push({
-          x: x + (Math.random() * 10 - 5),
-          y: y + (Math.random() * 10 - 5),
-          vx: -65 - Math.random() * 85,
-          vy: (Math.random() - 0.5) * 80 + 20,
-          size: 4.5 + Math.random() * 3.5,
-          rotation: Math.random() * Math.PI * 2,
-          vRot: (Math.random() - 0.5) * 9,
-          life: 0.55 + Math.random() * 0.35,
-          maxLife: 0.9,
-          color: leafColors[i % leafColors.length],
-          kind: i % 3 === 0 ? 'feather' : 'maple',
-          gravity: 85,
-        });
+        this.emitParticle(
+          x + (Math.random() * 12 - 6),
+          y + (Math.random() * 10 - 5),
+          -72 - Math.random() * 92,
+          (Math.random() - 0.5) * 78 + 22,
+          4.6 + Math.random() * 3.4,
+          Math.random() * Math.PI * 2,
+          (Math.random() - 0.5) * 9,
+          0.56 + Math.random() * 0.34,
+          leafColors[i % leafColors.length],
+          '#fde68a',
+          i % 4 === 0 ? 'feather' : 'maple',
+          82,
+          0.985,
+        );
       }
-      // Subtle tengu wind gust arc
-      this.state.particles.push({
-        x: x - 6,
-        y,
-        vx: -115,
-        vy: 14,
-        size: 13,
-        rotation: Math.PI,
-        vRot: 0,
-        life: 0.24,
-        maxLife: 0.24,
-        color: 'rgba(255, 248, 226, 0.72)',
-        kind: 'wind',
-        gravity: 0,
-      });
+      // Silky curving tengu wind ribbon
+      if (withAirRing || Math.random() < 0.55) {
+        this.emitParticle(
+          x - 4,
+          y + (Math.random() * 10 - 5),
+          -148 - Math.random() * 32,
+          (Math.random() - 0.5) * 26 + 10,
+          17 + Math.random() * 7,
+          (Math.random() - 0.5) * 0.25,
+          0,
+          0.28,
+          'rgba(255, 250, 232, 0.78)',
+          'rgba(254, 202, 202, 0.45)',
+          'windRibbon',
+          0,
+          0.96,
+        );
+      }
     } else if (character === 'reimu') {
       const petalColors = ['#fda4af', '#fbcfe8', '#fff1f2', '#fb7185'];
       for (let i = 0; i < count; i++) {
-        this.state.particles.push({
-          x: x + (Math.random() * 12 - 6),
-          y: y + (Math.random() * 10 - 5),
-          vx: -55 - Math.random() * 70,
-          vy: (Math.random() - 0.5) * 70 + 18,
-          size: 4.2 + Math.random() * 2.8,
-          rotation: Math.random() * Math.PI * 2,
-          vRot: (Math.random() - 0.5) * 7,
-          life: 0.65 + Math.random() * 0.38,
-          maxLife: 1.03,
-          color: petalColors[i % petalColors.length],
-          kind: 'sakura',
-          gravity: 55,
-        });
+        this.emitParticle(
+          x + (Math.random() * 12 - 6),
+          y + (Math.random() * 10 - 5),
+          -58 - Math.random() * 75,
+          (Math.random() - 0.5) * 72 + 18,
+          4.4 + Math.random() * 2.8,
+          Math.random() * Math.PI * 2,
+          (Math.random() - 0.5) * 7,
+          0.66 + Math.random() * 0.36,
+          petalColors[i % petalColors.length],
+          '#fff5f7',
+          i % 4 === 0 ? 'sparkle' : 'sakura',
+          52,
+          0.985,
+        );
       }
     } else {
       const iceColors = ['#e0f2fe', '#7dd3fc', '#38bdf8', '#ffffff'];
       for (let i = 0; i < count; i++) {
-        this.state.particles.push({
-          x: x + (Math.random() * 12 - 6),
-          y: y + (Math.random() * 12 - 6),
-          vx: -60 - Math.random() * 80,
-          vy: (Math.random() - 0.5) * 78 + 15,
-          size: 4.2 + Math.random() * 3.2,
-          rotation: Math.random() * Math.PI,
-          vRot: (Math.random() - 0.5) * 6,
-          life: 0.55 + Math.random() * 0.32,
-          maxLife: 0.87,
-          color: iceColors[i % iceColors.length],
-          kind: i % 2 === 0 ? 'snowflake' : 'sparkle',
-          gravity: 40,
-        });
+        const kind: ParticleKind =
+          i % 3 === 0 ? 'iceCrystal' : i % 2 === 0 ? 'snowflake' : 'sparkle';
+        this.emitParticle(
+          x + (Math.random() * 12 - 6),
+          y + (Math.random() * 12 - 6),
+          -62 - Math.random() * 82,
+          (Math.random() - 0.5) * 76 + 14,
+          4.4 + Math.random() * 3.2,
+          Math.random() * Math.PI,
+          (Math.random() - 0.5) * 6,
+          0.56 + Math.random() * 0.34,
+          iceColors[i % iceColors.length],
+          '#bae6fd',
+          kind,
+          38,
+          0.985,
+        );
       }
     }
   }
@@ -866,113 +1029,126 @@ class FlappyEngine implements GameInstance {
         ? ['#fde047', '#fb923c', '#ef4444', '#ffffff']
         : ['#ffffff', '#fde047', '#38bdf8', '#93c5fd'];
 
-    this.state.particles.push({
-      x,
-      y,
-      vx: 0,
-      vy: 0,
-      size: 14,
-      rotation: 0,
-      vRot: 0,
-      life: 0.36,
-      maxLife: 0.36,
-      color: colors[0],
-      kind: 'ring',
-      gravity: 0,
-    });
+    this.emitParticle(x, y, 0, 0, 15, 0, 0, 0.38, colors[0], '#ffffff', 'ring', 0, 1);
 
-    for (let i = 0; i < 14; i++) {
-      const a = (i / 14) * Math.PI * 2 + Math.random() * 0.25;
-      const spd = 75 + Math.random() * 115;
-      this.state.particles.push({
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2 + Math.random() * 0.22;
+      const spd = 76 + Math.random() * 120;
+      this.emitParticle(
         x,
         y,
-        vx: Math.cos(a) * spd,
-        vy: Math.sin(a) * spd,
-        size: 4 + Math.random() * 3.5,
-        rotation: a,
-        vRot: (Math.random() - 0.5) * 10,
-        life: 0.48 + Math.random() * 0.26,
-        maxLife: 0.74,
-        color: colors[i % colors.length],
-        kind: i % 2 === 0 ? 'starBurst' : 'sparkle',
-        gravity: 95,
-      });
+        Math.cos(a) * spd,
+        Math.sin(a) * spd,
+        4.2 + Math.random() * 3.6,
+        a,
+        (Math.random() - 0.5) * 10,
+        0.5 + Math.random() * 0.28,
+        colors[i % colors.length],
+        '#ffffff',
+        i % 2 === 0 ? 'starBurst' : 'sparkle',
+        92,
+        0.96,
+      );
     }
   }
 
   private spawnCrashBurst(x: number, y: number): void {
-    this.state.particles.push({
-      x,
-      y,
-      vx: 0,
-      vy: 0,
-      size: 16,
-      rotation: 0,
-      vRot: 0,
-      life: 0.32,
-      maxLife: 0.32,
-      color: '#fff7ed',
-      kind: 'ring',
-      gravity: 0,
-    });
+    this.emitParticle(x, y, 0, 0, 17, 0, 0, 0.34, '#fff7ed', '#ffffff', 'ring', 0, 1);
 
     const colors = ['#fde047', '#fb7185', '#ffffff', '#f97316'];
-    for (let i = 0; i < 16; i++) {
-      const a = (i / 16) * Math.PI * 2 + Math.random() * 0.3;
-      const spd = 90 + Math.random() * 145;
-      this.state.particles.push({
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * Math.PI * 2 + Math.random() * 0.28;
+      const spd = 92 + Math.random() * 150;
+      this.emitParticle(
         x,
         y,
-        vx: Math.cos(a) * spd,
-        vy: Math.sin(a) * spd - 35,
-        size: 4.5 + Math.random() * 3.5,
-        rotation: Math.random() * Math.PI * 2,
-        vRot: (Math.random() - 0.5) * 12,
-        life: 0.5 + Math.random() * 0.32,
-        maxLife: 0.82,
-        color: colors[i % colors.length],
-        kind: i % 3 === 0 ? 'starBurst' : 'feather',
-        gravity: 280,
-      });
+        Math.cos(a) * spd,
+        Math.sin(a) * spd - 36,
+        4.6 + Math.random() * 3.6,
+        Math.random() * Math.PI * 2,
+        (Math.random() - 0.5) * 12,
+        0.52 + Math.random() * 0.34,
+        colors[i % colors.length],
+        '#fffbeb',
+        i % 3 === 0 ? 'starBurst' : 'feather',
+        275,
+        0.98,
+      );
     }
   }
 
   private updateParticlesAndPopups(dt: number): void {
-    for (let i = this.state.particles.length - 1; i >= 0; i--) {
-      const p = this.state.particles[i];
+    const pool = this.state.particles;
+    let count = this.state.particleCount;
+    const dragPow = dt * 60;
+
+    for (let i = count - 1; i >= 0; i--) {
+      const p = pool[i];
       p.life -= dt;
       if (p.life <= 0) {
-        this.state.particles.splice(i, 1);
+        // O(1) swap-remove without allocating or shifting arrays
+        count--;
+        if (i !== count) {
+          const last = pool[count];
+          pool[count] = p;
+          pool[i] = last;
+        }
         continue;
+      }
+      if (p.drag < 1) {
+        const d = Math.pow(p.drag, dragPow);
+        p.vx *= d;
+        p.vy *= d;
       }
       p.vy += p.gravity * dt;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       p.rotation += p.vRot * dt;
     }
+    this.state.particleCount = count;
 
-    for (let i = this.state.floatingTexts.length - 1; i >= 0; i--) {
-      const ft = this.state.floatingTexts[i];
+    const texts = this.state.floatingTexts;
+    for (let i = texts.length - 1; i >= 0; i--) {
+      const ft = texts[i];
       ft.life -= dt;
       if (ft.life <= 0) {
-        this.state.floatingTexts.splice(i, 1);
+        texts.splice(i, 1);
         continue;
       }
       ft.y += ft.vy * dt;
-      ft.vy *= 0.96;
-    }
-
-    if (this.state.particles.length > 120) {
-      this.state.particles.splice(0, this.state.particles.length - 120);
+      ft.vy *= Math.pow(0.955, dragPow);
     }
   }
 
-  private update(dt: number): void {
+  private snapshotPreviousPositions(): void {
+    const s = this.state;
+    s.prevScrollDistance = s.scrollDistance;
+    s.player.prevY = s.player.y;
+    s.player.prevRotation = s.player.rotation;
+    for (let i = 0; i < s.pipes.length; i++) {
+      s.pipes[i].prevX = s.pipes[i].x;
+    }
+    for (let i = 0; i < s.stars.length; i++) {
+      s.stars[i].prevX = s.stars[i].x;
+      s.stars[i].prevY = s.stars[i].y;
+    }
+  }
+
+  private stepSimulation(dt: number): void {
     if (this.scorePopTimer > 0) {
       this.scorePopTimer -= dt;
       if (this.scorePopTimer <= 0) {
         this.scoreLiveEl.classList.remove('pop');
+      }
+    }
+
+    if (this.flapCooldownTimer > 0) {
+      this.flapCooldownTimer = Math.max(0, this.flapCooldownTimer - dt);
+    }
+    if (this.flapBufferTimer > 0) {
+      this.flapBufferTimer = Math.max(0, this.flapBufferTimer - dt);
+      if (this.flapCooldownTimer <= 0 && this.state.phase === 'playing') {
+        this.executeFlap();
       }
     }
 
@@ -993,7 +1169,7 @@ class FlappyEngine implements GameInstance {
       return;
     }
 
-    // Subtle impact hitstop freeze frame on crash!
+    // Subtle impact hitstop freeze frame on crash
     if (this.hitstopTimer > 0) {
       this.hitstopTimer -= dt;
       this.updateParticlesAndPopups(dt * 0.35);
@@ -1002,27 +1178,53 @@ class FlappyEngine implements GameInstance {
 
     this.state.elapsed += dt;
     const player = this.state.player;
-    player.orbAngle += dt * 3.8;
-    player.wingBoost = Math.max(0, player.wingBoost - dt * 3.4);
+    player.orbAngle += dt * 3.9;
+    player.wingBoost = Math.max(0, player.wingBoost - dt * 3.6);
+    player.flapGlow = Math.max(0, player.flapGlow - dt * 3.2);
+    player.determinedTimer = Math.max(0, player.determinedTimer - dt);
+    player.scarfWave += dt * (11.5 + (this.state.speed - PHYSICS.BASE_SPEED) * 0.06);
 
-    // Smoothly interpolate sky palette target (0 Dawn -> 1 Twilight -> 2 Scarlet Mist Night)
-    const targetSky = this.state.score >= 30 ? 2 : this.state.score >= 15 ? 1 : 0;
+    // Natural subtle anime blinking
+    if (player.blinkDuration > 0) {
+      player.blinkDuration = Math.max(0, player.blinkDuration - dt);
+    } else {
+      player.blinkTimer -= dt;
+      if (player.blinkTimer <= 0) {
+        player.blinkDuration = 0.11;
+        player.blinkTimer = 2.6 + Math.random() * 2.8;
+      }
+    }
+
+    // Elastic spring return for squash-and-stretch
+    const springK = 320;
+    const springC = 18;
+    player.scaleVelX += ((1 - player.scaleX) * springK - player.scaleVelX * springC) * dt;
+    player.scaleVelY += ((1 - player.scaleY) * springK - player.scaleVelY * springC) * dt;
+    player.scaleX = clamp(player.scaleX + player.scaleVelX * dt, 0.72, 1.32);
+    player.scaleY = clamp(player.scaleY + player.scaleVelY * dt, 0.72, 1.34);
+
+    // Continuous smooth cross-fade sky progress (0 Dawn -> 1 Golden Sunset -> 2 Scarlet Mist Night)
+    const targetSky =
+      this.state.score >= 30
+        ? 2
+        : this.state.score >= 15
+          ? 1 + clamp((this.state.score - 15) / 15, 0, 1) * 0.32
+          : clamp(this.state.score / 15, 0, 1) * 0.35;
     const skyDiff = targetSky - this.state.skyProgress;
-    if (Math.abs(skyDiff) > 0.001) {
-      this.state.skyProgress += Math.sign(skyDiff) * Math.min(Math.abs(skyDiff), dt * 0.45);
+    if (Math.abs(skyDiff) > 0.0005) {
+      this.state.skyProgress += skyDiff * Math.min(1, dt * 1.15);
     }
 
     if (this.state.phase === 'ready') {
-      // Gentle hover + relaxing scrolling scenery
-      this.state.scrollDistance += PHYSICS.BASE_SPEED * 0.42 * dt;
-      player.y = PHYSICS.PLAYER_START_Y + Math.sin(this.state.elapsed * 4.2) * 8.5;
-      player.rotation = Math.sin(this.state.elapsed * 4.2 - 0.5) * 0.07;
-      player.wingPhase += dt * 11;
+      this.state.scrollDistance += PHYSICS.BASE_SPEED * 0.44 * dt;
+      player.y = PHYSICS.PLAYER_START_Y + Math.sin(this.state.elapsed * 4.1) * 8.5;
+      player.rotation = Math.sin(this.state.elapsed * 4.1 - 0.5) * 0.075;
+      player.wingPhase += dt * 11.2;
 
       this.trailTimer += dt;
-      if (this.trailTimer >= 0.24) {
+      if (this.trailTimer >= 0.22) {
         this.trailTimer = 0;
-        this.spawnFlapBurst(player.x - 14, player.y + 4, this.state.character, 1);
+        this.spawnFlapBurst(player.x - 14, player.y + 4, this.state.character, 1, false);
       }
 
       this.updateParticlesAndPopups(dt);
@@ -1031,84 +1233,90 @@ class FlappyEngine implements GameInstance {
 
     if (this.state.phase === 'playing') {
       const diff = this.getDifficultyParams(this.state.score);
-      this.state.speed += (diff.speed - this.state.speed) * Math.min(1, dt * 3);
+      this.state.speed += (diff.speed - this.state.speed) * Math.min(1, dt * 3.2);
       this.state.scrollDistance += this.state.speed * dt;
 
       // Vertical physics
       player.vy = Math.min(PHYSICS.MAX_FALL_SPEED, player.vy + PHYSICS.GRAVITY * dt);
       player.y += player.vy * dt;
 
-      // Soft ceiling clamp so player cannot fly over pipes
-      const ceilingY = player.radius + 4;
+      // Soft ceiling clamp so player cannot fly above pipes
+      const ceilingY = player.radius + 5;
       if (player.y < ceilingY) {
         player.y = ceilingY;
         if (player.vy < 0) player.vy = 0;
       }
 
-      // Snappy yet smooth Flappy pitch rotation
-      const targetRot =
-        player.vy < 95
-          ? -0.44
-          : clamp(((player.vy - 95) / (PHYSICS.MAX_FALL_SPEED - 95)) * 1.48 - 0.12, -0.44, 1.42);
-      const rotSpeed = targetRot < player.rotation ? 15 : 6.2;
-      player.rotation += (targetRot - player.rotation) * Math.min(1, dt * rotSpeed);
+      // Critically-damped spring pitch angle: snappy upward lift, graceful nose-dive curve
+      let targetRot: number;
+      if (player.vy < 65) {
+        targetRot = -0.42;
+      } else {
+        const diveT = clamp((player.vy - 65) / (PHYSICS.MAX_FALL_SPEED - 65), 0, 1);
+        targetRot = -0.42 + (diveT * diveT * 0.68 + diveT * 0.32) * 1.78;
+      }
+      const omega = targetRot < player.rotation ? 22 : 11.5;
+      const rotAccel = omega * omega * (targetRot - player.rotation) - 2 * omega * player.rotVelocity;
+      player.rotVelocity += rotAccel * dt;
+      player.rotation = clamp(player.rotation + player.rotVelocity * dt, -0.56, 1.44);
 
-      // Wing animation (faster when ascending, glide-flutter while diving)
-      player.wingPhase += dt * (player.vy < 80 ? 18 : 9);
+      // Articulated wing cadence (energetic on ascent, graceful flutter on dive)
+      player.wingPhase += dt * (player.vy < 70 ? 19.5 : 9.2);
 
-      // Gentle ambient character particle trail while flying
+      // Ambient themed character trail while flying
       this.trailTimer += dt;
-      if (this.trailTimer >= 0.16) {
+      if (this.trailTimer >= 0.14) {
         this.trailTimer = 0;
-        this.spawnFlapBurst(player.x - 14, player.y + 3, this.state.character, 1);
+        this.spawnFlapBurst(player.x - 14, player.y + 3, this.state.character, 1, false);
       }
 
-      // Move pipes & spawn next ones
-      for (const pipe of this.state.pipes) {
+      // Move pipes & score checks
+      for (let i = 0; i < this.state.pipes.length; i++) {
+        const pipe = this.state.pipes[i];
         pipe.x -= this.state.speed * dt;
         if (!pipe.passed && pipe.x + pipe.width * 0.5 < player.x) {
           pipe.passed = true;
           this.state.pipesCleared++;
           this.audio.playScore();
-          this.addScore(1, player.x + 14, player.y - 24, '+1', '#fffef0');
+          this.addScore(1, player.x + 16, player.y - 24, '+1', '#fffef0');
         }
       }
 
       // Cull offscreen pipes
-      while (this.state.pipes.length > 0 && this.state.pipes[0].x + this.state.pipes[0].width < -32) {
+      while (this.state.pipes.length > 0 && this.state.pipes[0].x + this.state.pipes[0].width < -40) {
         this.state.pipes.shift();
       }
 
-      // Spawn new pipe when rightmost pipe leaves enough room
+      // Spawn new pipe ahead of right edge
       const lastPipe = this.state.pipes[this.state.pipes.length - 1];
-      if (!lastPipe || lastPipe.x <= STAGE_WIDTH + 60 - diff.spacing) {
-        const nextX = lastPipe ? lastPipe.x + diff.spacing : STAGE_WIDTH + 80;
+      if (!lastPipe || lastPipe.x <= STAGE_WIDTH + 72 - diff.spacing) {
+        const nextX = lastPipe ? lastPipe.x + diff.spacing : STAGE_WIDTH + 72;
         this.spawnPipeAt(nextX, lastPipe ?? null);
       }
 
-      // Update collectibles & check pickup
+      // Update collectibles & pickup checks
       for (let i = this.state.stars.length - 1; i >= 0; i--) {
         const s = this.state.stars[i];
         s.x -= this.state.speed * dt;
         s.y = s.baseY + Math.sin(this.state.elapsed * 4.4 + s.bobPhase) * 6.5;
-        s.spin += dt * 2.2;
+        s.spin += dt * 2.4;
 
         if (!s.collected) {
           const dx = player.x - s.x;
           const dy = player.y - s.y;
-          const collectR = player.radius + s.radius + 5; // Generous pickup magnet!
+          const collectR = player.radius + s.radius + 5.5;
           if (dx * dx + dy * dy <= collectR * collectR) {
             s.collected = true;
             this.state.starsCollected++;
             this.audio.playStar();
             this.spawnStarBurst(s.x, s.y, s.kind);
-            const label = s.kind === 'power' ? 'P +2!' : '信仰 +2!';
+            const label = s.kind === 'power' ? 'P +2!' : '★ +2!';
             const color = s.kind === 'power' ? '#fde047' : '#7dd3fc';
             this.addScore(2, s.x, s.y - 12, label, color);
           }
         }
 
-        if (s.collected || s.x < -36) {
+        if (s.collected || s.x < -40) {
           this.state.stars.splice(i, 1);
         }
       }
@@ -1118,9 +1326,10 @@ class FlappyEngine implements GameInstance {
         player.y = PLAYABLE_HEIGHT - player.radius;
         this.triggerCrash();
       } else {
-        // Pipe collision (forgiving circle-vs-AABB with 2px visual grace inset)
-        const grace = 2;
-        for (const pipe of this.state.pipes) {
+        // Forgiving inset circle-vs-AABB pipe collision
+        const grace = 2.5;
+        for (let i = 0; i < this.state.pipes.length; i++) {
+          const pipe = this.state.pipes[i];
           if (
             pipe.x + pipe.width + PHYSICS.PIPE_CAP_OVERHANG + 4 < player.x - player.radius ||
             pipe.x - PHYSICS.PIPE_CAP_OVERHANG - 4 > player.x + player.radius
@@ -1197,7 +1406,6 @@ class FlappyEngine implements GameInstance {
       return;
     }
 
-    // Game Over idle dizzy stars spin
     if (this.state.phase === 'gameover') {
       player.dizzyTime += dt;
       this.updateParticlesAndPopups(dt);
@@ -1206,12 +1414,28 @@ class FlappyEngine implements GameInstance {
 
   private loop = (timestamp: number): void => {
     if (this.destroyed) return;
-    // Clamp dt to 50ms so tab switching or frame stalls never teleport the flyer
     const rawDt = (timestamp - this.lastTimestamp) / 1000;
     this.lastTimestamp = timestamp;
-    const dt = clamp(Number.isFinite(rawDt) ? rawDt : 0.016, 0, 0.05);
+    const clampedDt = clamp(Number.isFinite(rawDt) ? rawDt : PHYSICS.FIXED_DT, 0, 0.05);
 
-    this.update(dt);
+    if (this.state.phase === 'paused') {
+      this.state.interpAlpha = 1;
+    } else {
+      this.accumulator += clampedDt;
+      let steps = 0;
+      const maxSteps = 6;
+      while (this.accumulator >= PHYSICS.FIXED_DT && steps < maxSteps) {
+        this.snapshotPreviousPositions();
+        this.stepSimulation(PHYSICS.FIXED_DT);
+        this.accumulator -= PHYSICS.FIXED_DT;
+        steps++;
+      }
+      if (steps === maxSteps && this.accumulator > PHYSICS.FIXED_DT) {
+        this.accumulator = 0;
+      }
+      this.state.interpAlpha = clamp(this.accumulator / PHYSICS.FIXED_DT, 0, 1);
+    }
+
     this.renderer.render(this.canvasCtx, this.state);
 
     this.rafId = requestAnimationFrame(this.loop);
@@ -1221,7 +1445,11 @@ class FlappyEngine implements GameInstance {
     if (this.destroyed) return;
     const selectedChar = this.state.character;
     const best = Math.max(this.state.bestScore, this.ctx.getBestScore());
-    this.state = this.createInitialState(selectedChar, best);
+    const pool = this.state.particles;
+    this.state = this.createInitialState(selectedChar, best, pool);
+    this.accumulator = 0;
+    this.flapBufferTimer = 0;
+    this.flapCooldownTimer = 0;
     this.hitstopTimer = 0;
     this.gameOverGuardTimer = 0;
     this.scorePopTimer = 0;
@@ -1231,6 +1459,7 @@ class FlappyEngine implements GameInstance {
     this.lastSkyPhaseId = 'dawn';
     this.runSaved = false;
     this.isNewBest = false;
+    this.particleOverwriteCursor = 0;
 
     this.scoreLiveEl.textContent = '0';
     this.scoreLiveEl.classList.remove('pop');
@@ -1243,9 +1472,11 @@ class FlappyEngine implements GameInstance {
     if (this.destroyed) return;
     if (paused && this.state.phase === 'playing') {
       this.state.phase = 'paused';
+      this.flapBufferTimer = 0;
       this.syncOverlays();
     } else if (!paused && this.state.phase === 'paused') {
       this.state.phase = 'playing';
+      this.accumulator = 0;
       this.lastTimestamp = performance.now();
       this.syncOverlays();
     }

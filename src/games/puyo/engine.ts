@@ -25,12 +25,14 @@ import {
   getSpellCardForChain,
 } from './types';
 
-const DAS_MS = 145;
-const ARR_MS = 44;
-const LOCK_DELAY_MS = 460;
-const SOFT_DROP_CELL_MS = 42;
-const MAX_LOCK_RESETS = 10;
+const DAS_MS = 132;
+const ARR_MS = 38;
+const LOCK_DELAY_MS = 380;
+const SOFT_DROP_LOCK_MS = 65;
+const SOFT_DROP_CELL_MS = 38;
+const MAX_LOCK_RESETS = 8;
 const QUICK_TURN_WINDOW_MS = 340;
+const INPUT_BUFFER_MS = 175;
 
 const CHAIN_POWER_TABLE = [
   0, 0, 8, 16, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416,
@@ -96,14 +98,19 @@ export class PuyoEngine {
   public shakeTime = 0;
   public shakeMagnitude = 0;
   public dangerRatio = 0; // 0..1 warning intensity when col 2 stacks high
+  public chainExcitement = 0; // 0..1 sparkles on puyos & magic circle during/after chains
+  public spellFlash = 0; // 0..1 dramatic diagonal flash flare on Spell Card cut-in
 
-  private pairTargetAngle = 0;
   private heldLeft = false;
   private heldRight = false;
   private heldDown = false;
   private dasDir: -1 | 0 | 1 = 0;
   private dasTimer = 0;
   private arrTimer = 0;
+  private bufferedRotate: -1 | 0 | 1 = 0;
+  private bufferedRotateUntil = -1;
+  private bufferedMove: -1 | 0 | 1 = 0;
+  private bufferedMoveUntil = -1;
   private generatedPairsCount = 0;
   private lastLandSoundTime = -1000;
 
@@ -223,6 +230,8 @@ export class PuyoEngine {
     this.spellBanner = null;
     this.shakeTime = 0;
     this.dangerRatio = 0;
+    this.chainExcitement = 0;
+    this.spellFlash = 0;
     this.queue = [];
     this.generatedPairsCount = 0;
     this.clearHeldInputs();
@@ -253,6 +262,15 @@ export class PuyoEngine {
     this.dasDir = 0;
     this.dasTimer = 0;
     this.arrTimer = 0;
+    this.bufferedRotate = 0;
+    this.bufferedRotateUntil = -1;
+    this.bufferedMove = 0;
+    this.bufferedMoveUntil = -1;
+  }
+
+  public getLockProgress(): number {
+    if (!this.activePair || this.phase !== 'falling') return 0;
+    return Math.min(1, this.activePair.lockTimer / LOCK_DELAY_MS);
   }
 
   private randomColor(): PuyoColor {
@@ -342,15 +360,40 @@ export class PuyoEngine {
       fallFrac: 0,
       lockTimer: 0,
       lockResets: 0,
+      softDropGroundMs: 0,
       renderCol: DEATH_COL,
+      renderRow: DEATH_ROW - 0.52,
       renderAngle: 0,
+      targetAngle: 0,
       quickTurnTimer: 0,
       bumpOffsetX: 0,
+      touchSquish: 0,
+      touchSquishPhase: 0,
+      wasGrounded: false,
     };
-    this.pairTargetAngle = 0;
     this.chain = 0;
     this.phase = 'falling';
     this.updateDangerRatio();
+
+    // Consume buffered directional tap or rotation pressed during cascade/spawn
+    if (this.bufferedMove !== 0 && this.elapsedMs <= this.bufferedMoveUntil) {
+      const moveDir = this.bufferedMove;
+      this.bufferedMove = 0;
+      this.bufferedMoveUntil = -1;
+      this.tryMoveHorizontal(moveDir);
+    } else {
+      this.bufferedMove = 0;
+    }
+
+    if (this.bufferedRotate !== 0 && this.elapsedMs <= this.bufferedRotateUntil) {
+      const rotDir = this.bufferedRotate;
+      this.bufferedRotate = 0;
+      this.bufferedRotateUntil = -1;
+      this.tryRotate(rotDir);
+    } else {
+      this.bufferedRotate = 0;
+    }
+
     this.notifyHud();
   }
 
@@ -395,6 +438,9 @@ export class PuyoEngine {
       this.arrTimer = 0;
       if (this.phase === 'falling' && !this.paused) {
         this.tryMoveHorizontal(-1);
+      } else if ((this.phase === 'dropping' || this.phase === 'clearing') && !this.paused) {
+        this.bufferedMove = -1;
+        this.bufferedMoveUntil = this.elapsedMs + INPUT_BUFFER_MS;
       }
     } else if (this.heldRight) {
       this.dasDir = 1;
@@ -415,6 +461,9 @@ export class PuyoEngine {
       this.arrTimer = 0;
       if (this.phase === 'falling' && !this.paused) {
         this.tryMoveHorizontal(1);
+      } else if ((this.phase === 'dropping' || this.phase === 'clearing') && !this.paused) {
+        this.bufferedMove = 1;
+        this.bufferedMoveUntil = this.elapsedMs + INPUT_BUFFER_MS;
       }
     } else if (this.heldLeft) {
       this.dasDir = -1;
@@ -428,12 +477,19 @@ export class PuyoEngine {
   public setDownHeld(held: boolean): void {
     if (held) {
       this.audio.unlock();
+    } else if (this.activePair) {
+      this.activePair.softDropGroundMs = 0;
     }
     this.heldDown = held;
   }
 
   public tryMoveHorizontal(dx: -1 | 1): boolean {
-    if (this.phase !== 'falling' || this.paused || !this.activePair) {
+    if (this.paused) return false;
+    if (this.phase !== 'falling' || !this.activePair) {
+      if (this.phase === 'dropping' || this.phase === 'clearing') {
+        this.bufferedMove = dx;
+        this.bufferedMoveUntil = this.elapsedMs + INPUT_BUFFER_MS;
+      }
       return false;
     }
     const p = this.activePair;
@@ -443,6 +499,7 @@ export class PuyoEngine {
       p.pivotCol = nextCol;
       if (this.isPairBlockedBelow(p.pivotCol, p.pivotRow, p.rot)) {
         p.fallFrac = 0;
+        p.softDropGroundMs = 0;
         this.tryResetLockDelay();
       }
       p.quickTurnTimer = 0;
@@ -450,7 +507,7 @@ export class PuyoEngine {
       return true;
     }
 
-    p.bumpOffsetX = dx * 0.16;
+    p.bumpOffsetX = dx * 0.17;
     return false;
   }
 
@@ -460,7 +517,12 @@ export class PuyoEngine {
    * @param dir +1 = clockwise, -1 = counter-clockwise
    */
   public tryRotate(dir: 1 | -1): boolean {
-    if (this.phase !== 'falling' || this.paused || !this.activePair) {
+    if (this.paused) return false;
+    if (this.phase !== 'falling' || !this.activePair) {
+      if (this.phase === 'dropping' || this.phase === 'clearing') {
+        this.bufferedRotate = dir;
+        this.bufferedRotateUntil = this.elapsedMs + INPUT_BUFFER_MS;
+      }
       return false;
     }
     this.audio.unlock();
@@ -543,9 +605,13 @@ export class PuyoEngine {
     p.pivotCol = newCol;
     p.pivotRow = newRow;
     p.rot = newRot;
-    this.pairTargetAngle += angleDelta;
+    // Shortest directional arc around pivot (normalized so cumulative angle stays bounded)
+    p.targetAngle += angleDelta;
     if (this.isPairBlockedBelow(p.pivotCol, p.pivotRow, p.rot)) {
       p.fallFrac = 0;
+      p.softDropGroundMs = 0;
+      p.touchSquish = Math.max(p.touchSquish, 0.42);
+      p.touchSquishPhase = 0;
       this.tryResetLockDelay();
     } else if (movedVertically) {
       p.fallFrac = 0;
@@ -558,6 +624,49 @@ export class PuyoEngine {
     if (this.activePair.lockResets < MAX_LOCK_RESETS) {
       this.activePair.lockTimer = 0;
       this.activePair.lockResets += 1;
+    }
+  }
+
+  private triggerCellSquish(col: number, row: number, energy: number): void {
+    if (!this.isInside(col, row)) return;
+    const cell = this.grid[row][col];
+    if (!cell) return;
+    cell.squish = Math.min(1.4, Math.max(cell.squish, energy));
+    cell.squishPhase = 0;
+    cell.squishFreq = 0.025 + ((col * 7 + row * 13) % 5) * 0.0012;
+
+    // Subtle sympathetic jelly cushion ripple on the puyo directly underneath
+    if (row + 1 < TOTAL_ROWS) {
+      const below = this.grid[row + 1][col];
+      if (below) {
+        below.squish = Math.min(1.0, Math.max(below.squish, energy * 0.42));
+        below.squishPhase = 0.25;
+      }
+    }
+  }
+
+  private spawnLandingDust(col: number, row: number, color: PuyoColor, count: number): void {
+    if (row < HIDDEN_ROWS) return;
+    const theme = PUYO_THEMES[color];
+    const cx = col + 0.5;
+    const cy = row - HIDDEN_ROWS + 0.88;
+    for (let i = 0; i < count; i++) {
+      const side = i % 2 === 0 ? -1 : 1;
+      const spread = 0.0012 + Math.random() * 0.002;
+      this.particles.push({
+        x: cx + side * (0.12 + Math.random() * 0.2),
+        y: cy,
+        vx: side * spread,
+        vy: -0.0007 - Math.random() * 0.0014,
+        size: 0.06 + Math.random() * 0.06,
+        color: i === 0 ? '#ffffff' : theme.light,
+        alpha: 0.85,
+        life: 0,
+        maxLife: 220 + Math.random() * 140,
+        shape: i % 3 === 0 ? 'star' : 'dot',
+        rotation: Math.random() * Math.PI * 2,
+        vRot: (Math.random() - 0.5) * 0.012,
+      });
     }
   }
 
@@ -577,19 +686,19 @@ export class PuyoEngine {
     if (ghosts.length === 2) {
       this.dropTrails.push({
         col: p.pivotCol,
-        fromRow: p.pivotRow + p.fallFrac,
+        fromRow: p.renderRow,
         toRow: ghosts[0].row,
         color: PUYO_THEMES[p.pivotColor].light,
         life: 0,
-        maxLife: 190,
+        maxLife: 210,
       });
       this.dropTrails.push({
         col: cx,
-        fromRow: cy + p.fallFrac,
+        fromRow: cy + (p.renderRow - p.pivotRow),
         toRow: ghosts[1].row,
         color: PUYO_THEMES[p.childColor].light,
         life: 0,
-        maxLife: 190,
+        maxLife: 210,
       });
     }
 
@@ -599,8 +708,9 @@ export class PuyoEngine {
       this.notifyScore();
     }
     p.fallFrac = 0;
+    p.renderRow = p.pivotRow;
     this.audio.playHardDrop();
-    this.lockActivePair();
+    this.lockActivePair(true);
   }
 
   public getGhostPositions(): GhostCell[] {
@@ -653,24 +763,35 @@ export class PuyoEngine {
 
   // ==================== LOCKING, GRAVITY, CHAINS ====================
 
-  private lockActivePair(): void {
+  private lockActivePair(fromHardDrop = false): void {
     const p = this.activePair;
     if (!p) return;
 
+    const squishEnergy = fromHardDrop ? 1.28 : 0.96;
     const [cx, cy] = this.getChildCoords(p.pivotCol, p.pivotRow, p.rot);
     if (this.isInside(p.pivotCol, p.pivotRow)) {
       this.grid[p.pivotRow][p.pivotCol] = {
         color: p.pivotColor,
-        squish: 0.9,
+        squish: 0,
         squishPhase: 0,
+        squishFreq: 0.026,
       };
+      this.triggerCellSquish(p.pivotCol, p.pivotRow, squishEnergy);
+      if (fromHardDrop) {
+        this.spawnLandingDust(p.pivotCol, p.pivotRow, p.pivotColor, 4);
+      }
     }
     if (this.isInside(cx, cy)) {
       this.grid[cy][cx] = {
         color: p.childColor,
-        squish: 0.9,
+        squish: 0,
         squishPhase: 0,
+        squishFreq: 0.027,
       };
+      this.triggerCellSquish(cx, cy, squishEnergy);
+      if (fromHardDrop) {
+        this.spawnLandingDust(cx, cy, p.childColor, 4);
+      }
     }
 
     this.activePair = null;
@@ -832,7 +953,8 @@ export class PuyoEngine {
     this.totalCleared += clearedCount;
     this.clearingCells = clearedList;
     this.clearTimer = 0;
-    this.clearDuration = this.chain >= 3 ? 520 : 440;
+    this.clearDuration = this.chain >= 3 ? 470 : this.chain === 2 ? 430 : 385;
+    this.chainExcitement = 1;
     this.phase = 'clearing';
 
     // Centroid popup
@@ -848,7 +970,7 @@ export class PuyoEngine {
       color: this.chain >= 4 ? '#ffe36e' : primaryColor,
       life: 0,
       maxLife: 1150,
-      scale: Math.min(1.45, 0.96 + this.chain * 0.1),
+      scale: Math.min(1.48, 0.98 + this.chain * 0.1),
     });
 
     // Touhou Spell Card Cut-in for 2+ chains
@@ -860,12 +982,31 @@ export class PuyoEngine {
         caster: spell.caster,
         primaryColor: spell.primaryColor,
         secondaryColor: spell.secondaryColor,
+        motif: spell.motif,
         timer: 0,
         duration: 1550,
       };
+      this.spellFlash = Math.min(1, 0.55 + this.chain * 0.1);
       this.shakeTime = 240 + Math.min(this.chain, 6) * 35;
       this.shakeMagnitude = Math.min(8, 2.2 + this.chain * 1.1);
       this.audio.playSpellCard(this.chain);
+      // Sparkling burst rings radiating from Spell Card emblem!
+      for (let i = 0; i < 2; i++) {
+        this.particles.push({
+          x: COLS * 0.5,
+          y: 3.1,
+          vx: 0,
+          vy: 0,
+          size: 0.4 + i * 0.35,
+          color: i === 0 ? spell.secondaryColor : spell.primaryColor,
+          alpha: 0.9,
+          life: 0,
+          maxLife: 420 + i * 140,
+          shape: 'ring',
+          rotation: 0,
+          vRot: 0,
+        });
+      }
     }
 
     this.audio.playChain(this.chain);
@@ -932,9 +1073,11 @@ export class PuyoEngine {
         caster: 'ALL CLEAR +2100',
         primaryColor: '#f5b82e',
         secondaryColor: '#fff7c2',
+        motif: 'yinyang',
         timer: 0,
         duration: 1900,
       };
+      this.spellFlash = 0.85;
       this.floatingTexts.push({
         x: COLS / 2,
         y: 5.2,
@@ -997,16 +1140,21 @@ export class PuyoEngine {
       return;
     }
 
-    // Update squish animations on settled grid cells
+    // Update elastic damped-spring squish animations on settled grid cells
     for (let r = 0; r < TOTAL_ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         const cell = this.grid[r][c];
         if (cell && cell.squish > 0.001) {
-          cell.squishPhase += dt * 0.024;
-          cell.squish *= Math.pow(0.84, dt / 16.67);
-          if (cell.squish < 0.01) cell.squish = 0;
+          cell.squishPhase += dt * cell.squishFreq;
+          cell.squish *= Math.exp(-dt * 0.0095);
+          if (cell.squish < 0.008) cell.squish = 0;
         }
       }
+    }
+
+    // Allow subtle DAS pre-charging while holding left/right during cascade/clear
+    if (this.dasDir !== 0 && (this.phase === 'dropping' || this.phase === 'clearing')) {
+      this.dasTimer = Math.min(DAS_MS, this.dasTimer + dt * 0.75);
     }
 
     if (this.phase === 'falling') {
@@ -1039,60 +1187,102 @@ export class PuyoEngine {
       }
     }
 
-    // Smooth visual interpolation for horizontal column, angle, bump
-    const colLerp = 1 - Math.pow(0.0008, dt / 1000);
-    p.renderCol += (p.pivotCol - p.renderCol) * colLerp;
-    if (Math.abs(p.pivotCol - p.renderCol) < 0.005) {
-      p.renderCol = p.pivotCol;
-    }
-
-    const angleLerp = 1 - Math.pow(0.00015, dt / 1000);
-    p.renderAngle += (this.pairTargetAngle - p.renderAngle) * angleLerp;
-    if (Math.abs(this.pairTargetAngle - p.renderAngle) < 0.005) {
-      p.renderAngle = this.pairTargetAngle;
-    }
-
-    p.bumpOffsetX *= Math.pow(0.75, dt / 16.67);
-    if (Math.abs(p.bumpOffsetX) < 0.003) p.bumpOffsetX = 0;
-
-    if (p.quickTurnTimer > 0) {
-      p.quickTurnTimer = Math.max(0, p.quickTurnTimer - dt);
-    }
-
-    // Vertical gravity / lock delay
+    // Vertical gravity / authentic ~380ms lock delay
     const blocked = this.isPairBlockedBelow(p.pivotCol, p.pivotRow, p.rot);
     if (blocked) {
       p.fallFrac = 0;
-      const lockRate = this.heldDown ? 5.2 : 1;
-      p.lockTimer += dt * lockRate;
-      if (p.lockTimer >= LOCK_DELAY_MS) {
-        this.lockActivePair();
+      if (!p.wasGrounded) {
+        p.wasGrounded = true;
+        p.touchSquish = 0.62;
+        p.touchSquishPhase = 0;
       }
-      return;
+      if (this.heldDown) {
+        p.softDropGroundMs += dt;
+        // Sustained soft drop skips remaining lock delay crisply
+        if (p.softDropGroundMs >= SOFT_DROP_LOCK_MS) {
+          this.lockActivePair(false);
+          return;
+        }
+      } else {
+        p.softDropGroundMs = 0;
+      }
+      p.lockTimer += dt;
+      if (p.lockTimer >= LOCK_DELAY_MS) {
+        this.lockActivePair(false);
+        return;
+      }
+    } else {
+      p.wasGrounded = false;
+      p.lockTimer = 0;
+      p.softDropGroundMs = 0;
+      const gravityMs = this.getGravityMs();
+      const effectiveCellMs = this.heldDown
+        ? Math.min(gravityMs, SOFT_DROP_CELL_MS)
+        : gravityMs;
+
+      p.fallFrac += dt / effectiveCellMs;
+      while (p.fallFrac >= 1) {
+        if (this.isPairBlockedBelow(p.pivotCol, p.pivotRow, p.rot)) {
+          p.fallFrac = 0;
+          break;
+        }
+        p.pivotRow += 1;
+        p.fallFrac -= 1;
+        if (this.heldDown) {
+          this.score += 1;
+          this.notifyScore();
+        }
+        if (this.isPairBlockedBelow(p.pivotCol, p.pivotRow, p.rot)) {
+          p.fallFrac = 0;
+          break;
+        }
+      }
     }
 
-    p.lockTimer = 0;
-    const gravityMs = this.getGravityMs();
-    const effectiveCellMs = this.heldDown
-      ? Math.min(gravityMs, SOFT_DROP_CELL_MS)
-      : gravityMs;
+    // Silky 60/120Hz exponential interpolation for column, continuous row, and circular arc rotation
+    const colAlpha = 1 - Math.exp(-dt * 0.026);
+    p.renderCol += (p.pivotCol - p.renderCol) * colAlpha;
+    if (Math.abs(p.pivotCol - p.renderCol) < 0.002) {
+      p.renderCol = p.pivotCol;
+    }
 
-    p.fallFrac += dt / effectiveCellMs;
-    while (p.fallFrac >= 1) {
-      if (this.isPairBlockedBelow(p.pivotCol, p.pivotRow, p.rot)) {
-        p.fallFrac = 0;
-        break;
+    const targetRow = p.pivotRow + p.fallFrac;
+    const rowDiff = targetRow - p.renderRow;
+    if (Math.abs(rowDiff) > 0.001) {
+      // Slightly faster snap when falling smoothly, plush glide on floor/ceiling kicks & spawn
+      const rowRate = rowDiff < 0 ? 0.024 : 0.034;
+      p.renderRow += rowDiff * (1 - Math.exp(-dt * rowRate));
+      if (Math.abs(targetRow - p.renderRow) < 0.002) {
+        p.renderRow = targetRow;
       }
-      p.pivotRow += 1;
-      p.fallFrac -= 1;
-      if (this.heldDown) {
-        this.score += 1;
-        this.notifyScore();
+    } else {
+      p.renderRow = targetRow;
+    }
+
+    const angleAlpha = 1 - Math.exp(-dt * 0.029);
+    p.renderAngle += (p.targetAngle - p.renderAngle) * angleAlpha;
+    if (Math.abs(p.targetAngle - p.renderAngle) < 0.003) {
+      p.renderAngle = p.targetAngle;
+      // Keep canonical angles compact once settled
+      const twoPi = Math.PI * 2;
+      if (Math.abs(p.targetAngle) > twoPi * 4) {
+        const turns = Math.trunc(p.targetAngle / twoPi) * twoPi;
+        p.targetAngle -= turns;
+        p.renderAngle -= turns;
       }
-      if (this.isPairBlockedBelow(p.pivotCol, p.pivotRow, p.rot)) {
-        p.fallFrac = 0;
-        break;
-      }
+    }
+
+    p.bumpOffsetX *= Math.exp(-dt * 0.018);
+    if (Math.abs(p.bumpOffsetX) < 0.002) p.bumpOffsetX = 0;
+
+    if (p.touchSquish > 0.005) {
+      p.touchSquishPhase += dt * 0.027;
+      p.touchSquish *= Math.exp(-dt * 0.012);
+      if (p.touchSquish < 0.008) p.touchSquish = 0;
+    }
+
+    if (p.quickTurnTimer > 0) {
+      p.quickTurnTimer = Math.max(0, p.quickTurnTimer - dt);
     }
   }
 
@@ -1101,14 +1291,21 @@ export class PuyoEngine {
     let landedAny = false;
 
     for (const f of this.fallingPuyos) {
-      f.vy = Math.min(0.042, f.vy + 0.000095 * dt);
+      // Smooth ease-in gravity acceleration for juicy cascade falls
+      f.vy = Math.min(0.048, f.vy + 0.00011 * dt);
       f.y += f.vy * dt;
       if (f.y >= f.targetRow) {
         this.grid[f.targetRow][f.col] = {
           color: f.color,
-          squish: 1.0,
+          squish: 0,
           squishPhase: 0,
+          squishFreq: 0.026,
         };
+        const impactEnergy = Math.min(1.32, 0.72 + f.vy * 14);
+        this.triggerCellSquish(f.col, f.targetRow, impactEnergy);
+        if (f.targetRow - f.startRow >= 2) {
+          this.spawnLandingDust(f.col, f.targetRow, f.color, 3);
+        }
         landedAny = true;
       } else {
         stillFalling.push(f);
@@ -1128,6 +1325,14 @@ export class PuyoEngine {
   private updateVisualEffects(dt: number): void {
     if (this.shakeTime > 0) {
       this.shakeTime = Math.max(0, this.shakeTime - dt);
+    }
+
+    if (this.chainExcitement > 0) {
+      this.chainExcitement = Math.max(0, this.chainExcitement - dt / 1200);
+    }
+
+    if (this.spellFlash > 0) {
+      this.spellFlash = Math.max(0, this.spellFlash - dt / 340);
     }
 
     if (this.spellBanner) {

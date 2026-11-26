@@ -12,6 +12,9 @@ import {
   BACK_ICON_SVG,
   CLOSE_ICON_SVG,
   HELP_ICON_SVG,
+  HERO_MAGIC_CIRCLE_SVG,
+  HERO_SHRINE_ART_SVG,
+  HERO_YIN_YANG_SVG,
   PAUSE_ICON_SVG,
   PLAY_ICON_SVG,
   RESTART_ICON_SVG,
@@ -133,6 +136,32 @@ export class GensokyoPortalApp {
       event.preventDefault();
       event.stopImmediatePropagation();
       this.closeModal();
+      return;
+    }
+
+    // Prevent accidental page scrolling or topbar focus clicks during active gameplay
+    if (this.activeGame !== null && this.modalOpen === null) {
+      const target = event.target as HTMLElement | null;
+      const isEditable =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        Boolean(target?.isContentEditable);
+      if (isEditable) return;
+
+      const isScrollKey =
+        event.key === 'ArrowUp' ||
+        event.key === 'ArrowDown' ||
+        event.key === 'ArrowLeft' ||
+        event.key === 'ArrowRight' ||
+        event.key === ' ' ||
+        event.code === 'Space';
+      if (isScrollKey) {
+        const isTopbarButton = Boolean(target?.closest('.stage-topbar button'));
+        if (!isTopbarButton || event.key !== ' ') {
+          event.preventDefault();
+        }
+      }
     }
   };
 
@@ -176,7 +205,7 @@ export class GensokyoPortalApp {
     this.unmountActiveGame();
     document.body.classList.remove('stage-locked');
     document.title = '博丽神社游艺厅 · 东方同人小游戏合集';
-    this.backdrop?.start();
+    this.backdrop?.setPaused(false);
 
     const totalPlays = storage.getTotalPlayCount();
     const totalBest = storage.getTotalBestScore(GAMES.map((g) => g.id));
@@ -185,7 +214,7 @@ export class GensokyoPortalApp {
     const muted = storage.isMuted();
 
     this.viewHost.innerHTML = `
-      <div class="portal-shell">
+      <div class="portal-shell view-enter-home">
         <header class="portal-header">
           <div class="portal-header-inner">
             <a class="brand-link" href="#/" aria-label="博丽神社游艺厅首页">
@@ -217,6 +246,7 @@ export class GensokyoPortalApp {
         <main class="portal-main">
           <section class="hero-banner" aria-label="游艺厅欢迎横幅">
             <div class="hero-shrine-stripe"></div>
+            <div class="hero-shrine-art" aria-hidden="true">${HERO_SHRINE_ART_SVG}</div>
             <div class="hero-grid">
               <div class="hero-content">
                 <div class="hero-kicker">
@@ -248,72 +278,67 @@ export class GensokyoPortalApp {
                 </div>
                 <div class="hero-stats">
                   <div class="stat-plaque">
-                    <span class="stat-plaque-label">累计游玩局数</span>
+                    <span class="stat-plaque-label">累计局数</span>
                     <span class="stat-plaque-value" data-stat="total-plays">${formatScore(totalPlays)}</span>
-                    <span class="stat-plaque-sub">本地自动累计</span>
                   </div>
                   <div class="stat-plaque">
                     <span class="stat-plaque-label">最高分合计</span>
                     <span class="stat-plaque-value" data-stat="total-best">${formatScore(totalBest)}</span>
-                    <span class="stat-plaque-sub">跨游戏总战绩</span>
                   </div>
                   <div class="stat-plaque">
-                    <span class="stat-plaque-label">开放游艺机台</span>
+                    <span class="stat-plaque-label">开放机台</span>
                     <span class="stat-plaque-value">${GAMES.length} 款</span>
-                    <span class="stat-plaque-sub">桌面 / 移动端皆宜</span>
                   </div>
                 </div>
               </div>
               <div class="hero-emblem-wrap" aria-hidden="true">
-                <div class="hero-emblem-ring"></div>
-                <div class="hero-emblem-ring-inner"></div>
-                <div class="hero-emblem-orb">${YIN_YANG_SVG}</div>
+                <div class="hero-magic-circle">${HERO_MAGIC_CIRCLE_SVG}</div>
+                <div class="hero-emblem-orb">${HERO_YIN_YANG_SVG}</div>
               </div>
             </div>
           </section>
 
           <section aria-label="游艺机台列表">
-            <div class="section-header">
+            <div class="games-toolbar-header">
               <div class="section-title-group">
                 <h2 class="section-title">境内游艺机台</h2>
-                <p class="section-subtitle">选择一款东方同人小游戏，支持键盘、鼠标与触屏操控</p>
+                <p class="section-subtitle">支持键盘、鼠标与触屏操控，即点即玩</p>
               </div>
-            </div>
-
-            <div class="filter-toolbar">
-              <div class="filter-tabs" role="tablist" aria-label="游戏分类筛选">
-                ${CATEGORY_FILTERS.map(
-                  (cat) => `
+              <div class="filter-toolbar">
+                <div class="filter-tabs" role="tablist" aria-label="游戏分类筛选">
+                  ${CATEGORY_FILTERS.map(
+                    (cat) => `
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected="${this.selectedCategory === cat.id}"
+                      class="filter-tab ${this.selectedCategory === cat.id ? 'is-active' : ''}"
+                      data-filter-cat="${cat.id}"
+                    >
+                      ${escapeHtml(cat.label)}
+                    </button>`,
+                  ).join('')}
+                </div>
+                <label class="search-box" aria-label="搜索游戏">
+                  <span class="search-box-icon">${SEARCH_ICON_SVG}</span>
+                  <input
+                    type="search"
+                    class="search-input"
+                    placeholder="搜索游戏、角色或标签…"
+                    value="${escapeHtml(this.searchQuery)}"
+                    data-role="search-input"
+                  />
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected="${this.selectedCategory === cat.id}"
-                    class="filter-tab ${this.selectedCategory === cat.id ? 'is-active' : ''}"
-                    data-filter-cat="${cat.id}"
+                    class="search-clear-btn"
+                    data-action="clear-search"
+                    aria-label="清空搜索"
+                    ${this.searchQuery ? '' : 'hidden'}
                   >
-                    ${escapeHtml(cat.label)}
-                  </button>`,
-                ).join('')}
+                    ${CLOSE_ICON_SVG}
+                  </button>
+                </label>
               </div>
-              <label class="search-box" aria-label="搜索游戏">
-                <span class="search-box-icon">${SEARCH_ICON_SVG}</span>
-                <input
-                  type="search"
-                  class="search-input"
-                  placeholder="搜索游戏、角色或标签…"
-                  value="${escapeHtml(this.searchQuery)}"
-                  data-role="search-input"
-                />
-                <button
-                  type="button"
-                  class="search-clear-btn"
-                  data-action="clear-search"
-                  aria-label="清空搜索"
-                  ${this.searchQuery ? '' : 'hidden'}
-                >
-                  ${CLOSE_ICON_SVG}
-                </button>
-              </label>
             </div>
 
             <div class="games-grid" data-role="games-grid">
@@ -411,6 +436,10 @@ export class GensokyoPortalApp {
             class="game-card"
             style="--card-theme: ${escapeHtml(game.themeColor)}; --card-accent: ${escapeHtml(game.accentColor)};"
           >
+            <span class="card-corner card-corner-tl" aria-hidden="true"></span>
+            <span class="card-corner card-corner-tr" aria-hidden="true"></span>
+            <span class="card-corner card-corner-bl" aria-hidden="true"></span>
+            <span class="card-corner card-corner-br" aria-hidden="true"></span>
             <div
               class="game-card-cover"
               data-action="play-game"
@@ -550,14 +579,14 @@ export class GensokyoPortalApp {
     this.unmountActiveGame();
     document.body.classList.add('stage-locked');
     document.title = `${game.title} · 博丽神社游艺厅`;
-    this.backdrop?.pause();
+    this.backdrop?.setPaused(true);
 
     storage.recordPlayStart(game.id);
     const initialBest = storage.getBestScore(game.id);
     const muted = storage.isMuted();
 
     this.viewHost.innerHTML = `
-      <div class="stage-shell">
+      <div class="stage-shell view-enter-stage">
         <header class="stage-topbar">
           <div class="stage-left">
             <button type="button" class="btn btn-ghost btn-sm" data-stage-action="back" title="返回大厅">
@@ -609,7 +638,7 @@ export class GensokyoPortalApp {
         </header>
 
         <main class="stage-main">
-          <div class="stage-container" data-role="stage-container"></div>
+          <div class="stage-container stage-canvas-host" data-role="stage-container"></div>
         </main>
       </div>
     `;
@@ -632,6 +661,14 @@ export class GensokyoPortalApp {
     cleanupListeners.push(() => {
       isMounted = false;
     });
+
+    const handleStageContextMenu = (event: MouseEvent): void => {
+      const target = event.target as HTMLElement | null;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+      event.preventDefault();
+    };
+    container.addEventListener('contextmenu', handleStageContextMenu);
+    cleanupListeners.push(() => container.removeEventListener('contextmenu', handleStageContextMenu));
 
     const runTracker = {
       runEnded: false,
