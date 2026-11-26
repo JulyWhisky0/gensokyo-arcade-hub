@@ -1,8 +1,15 @@
-import { ORB_TIERS } from './tiers';
+import {
+  ORB_TIERS,
+  type FumoExpression,
+  type OrbFaceState,
+  type OrbTierDef,
+  type SupportSpellId,
+} from './tiers';
 
 const TAU = Math.PI * 2;
-/** Padding multiplier around orb radius so hats, wings, horns & bows never clip in cached sprites */
+/** Generous padding so plush nub limbs, stems, crowns, hats, bows, wings & horns never clip */
 const SPRITE_PAD_RATIO = 1.62;
+const EMBROIDERY_INK = '#36211e';
 
 export interface CachedOrbSprite {
   canvas: HTMLCanvasElement;
@@ -16,53 +23,78 @@ export interface OrbDrawOptions {
   flash?: number;
   time?: number;
   iconMode?: boolean;
+  faceState?: OrbFaceState;
 }
 
 /**
- * High-DPI offscreen sprite cache for all 11 Touhou chibi orbs.
- * Pre-renders every orb once on init and only rebuilds when DPR/canvas scale bucket changes.
+ * High-DPI offscreen sprite cache for all 11 "苹果乐 × 东方 Fumo" plushie fruit tiers.
+ * Normal faces are pre-rendered once per scale bucket; blink & panic expressions are
+ * lazily cached per tier on first use so live Fumo expressions run at locked 60fps
+ * with authentic bangs layering over eyes.
  */
 export class OrbSpriteCache {
-  private sprites: Array<CachedOrbSprite | null> = new Array(ORB_TIERS.length).fill(null);
+  private normalSprites: Array<CachedOrbSprite | null> = new Array(ORB_TIERS.length).fill(null);
+  private blinkSprites: Array<CachedOrbSprite | null> = new Array(ORB_TIERS.length).fill(null);
+  private panicSprites: Array<CachedOrbSprite | null> = new Array(ORB_TIERS.length).fill(null);
   private currentBucketScale = 0;
 
   ensureScale(pixelScale: number): void {
     const quantized = Math.max(1, Math.min(3, Math.ceil(pixelScale * 4) / 4));
-    if (quantized === this.currentBucketScale && this.sprites[0] !== null) return;
+    if (quantized === this.currentBucketScale && this.normalSprites[0] !== null) return;
     this.currentBucketScale = quantized;
-    this.rebuildAll(quantized);
+    this.normalSprites = new Array(ORB_TIERS.length).fill(null);
+    this.blinkSprites = new Array(ORB_TIERS.length).fill(null);
+    this.panicSprites = new Array(ORB_TIERS.length).fill(null);
+    for (let t = 0; t < ORB_TIERS.length; t++) {
+      this.normalSprites[t] = this.buildSprite(t, quantized, 'normal');
+    }
   }
 
-  get(tier: number): CachedOrbSprite | null {
+  get(tier: number, faceState: OrbFaceState = 'normal'): CachedOrbSprite | null {
     if (this.currentBucketScale === 0) {
       this.ensureScale(Math.min(window.devicePixelRatio || 1, 2));
     }
-    return this.sprites[tier] ?? this.sprites[0] ?? null;
+    const idx = Math.max(0, Math.min(ORB_TIERS.length - 1, tier));
+    if (faceState === 'normal') {
+      if (!this.normalSprites[idx]) {
+        this.normalSprites[idx] = this.buildSprite(idx, this.currentBucketScale, 'normal');
+      }
+      return this.normalSprites[idx];
+    }
+    if (faceState === 'blink') {
+      if (!this.blinkSprites[idx]) {
+        this.blinkSprites[idx] = this.buildSprite(idx, this.currentBucketScale, 'blink');
+      }
+      return this.blinkSprites[idx];
+    }
+    if (!this.panicSprites[idx]) {
+      this.panicSprites[idx] = this.buildSprite(idx, this.currentBucketScale, 'panic');
+    }
+    return this.panicSprites[idx];
   }
 
-  private rebuildAll(scale: number): void {
-    for (let t = 0; t < ORB_TIERS.length; t++) {
-      const def = ORB_TIERS[t];
-      const logicalHalf = Math.ceil(def.radius * SPRITE_PAD_RATIO);
-      const pxSize = Math.max(16, Math.ceil(logicalHalf * 2 * scale));
-      const off = document.createElement('canvas');
-      off.width = pxSize;
-      off.height = pxSize;
-      const octx = off.getContext('2d');
-      if (octx) {
-        octx.setTransform(scale, 0, 0, scale, 0, 0);
-        drawTouhouOrb(octx, logicalHalf, logicalHalf, def.radius, t, 0, {
-          iconMode: false,
-          time: 0,
-        });
-      }
-      this.sprites[t] = { canvas: off, logicalHalf, scale };
+  private buildSprite(tier: number, scale: number, faceState: OrbFaceState): CachedOrbSprite {
+    const def = ORB_TIERS[tier];
+    const logicalHalf = Math.ceil(def.radius * SPRITE_PAD_RATIO);
+    const pxSize = Math.max(20, Math.ceil(logicalHalf * 2 * scale));
+    const off = document.createElement('canvas');
+    off.width = pxSize;
+    off.height = pxSize;
+    const octx = off.getContext('2d');
+    if (octx) {
+      octx.setTransform(scale, 0, 0, scale, 0, 0);
+      drawTouhouOrb(octx, logicalHalf, logicalHalf, def.radius, tier, 0, {
+        iconMode: false,
+        faceState,
+        time: 0,
+      });
     }
+    return { canvas: off, logicalHalf, scale };
   }
 }
 
 /**
- * Renders a crisp high-DPI miniature icon of any Touhou orb tier onto a small UI canvas.
+ * Renders a crisp high-DPI miniature icon of any plush fruit tier onto a small UI canvas.
  */
 export function renderOrbIcon(canvas: HTMLCanvasElement, tier: number, cssSize: number): void {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -75,14 +107,125 @@ export function renderOrbIcon(canvas: HTMLCanvasElement, tier: number, cssSize: 
   ctx.clearRect(0, 0, cssSize, cssSize);
 
   const r = cssSize * 0.335;
-  drawTouhouOrb(ctx, cssSize * 0.5, cssSize * 0.56, r, tier, 0, {
+  drawTouhouOrb(ctx, cssSize * 0.5, cssSize * 0.55, r, tier, 0, {
     iconMode: true,
+    faceState: 'normal',
     time: 0,
   });
 }
 
 /**
- * Draws one of the 11 expressive cel-shaded doujin Touhou chibi character orbs.
+ * Renders a crisp high-DPI portrait icon for the 4 Support Spell Card selector buttons.
+ */
+export function renderSupportPortrait(
+  canvas: HTMLCanvasElement,
+  spellId: SupportSpellId,
+  cssSize: number
+): void {
+  if (spellId === 'reimu') {
+    renderOrbIcon(canvas, 9, cssSize);
+    return;
+  }
+  if (spellId === 'sakuya') {
+    renderOrbIcon(canvas, 6, cssSize);
+    return;
+  }
+  if (spellId === 'suika') {
+    renderOrbIcon(canvas, 10, cssSize);
+    return;
+  }
+
+  // Bespoke adorable Yukari Yakumo (八云紫) Gap-Plush Fumo portrait icon!
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(cssSize * dpr);
+  canvas.height = Math.round(cssSize * dpr);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssSize, cssSize);
+
+  const cx = cssSize * 0.5;
+  const cy = cssSize * 0.56;
+  const r = cssSize * 0.335;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  // Subtle violet Gap aura behind Yukari plush
+  drawPlushNubLimbs(ctx, r, '#46226e', true);
+
+  // Matte twilight-violet plush body
+  const grad = ctx.createRadialGradient(-r * 0.25, -r * 0.3, r * 0.08, 0, 0, r * 1.05);
+  grad.addColorStop(0, '#ae82e8');
+  grad.addColorStop(0.58, '#7949b8');
+  grad.addColorStop(1, '#4d2682');
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, TAU);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = '#331559';
+  ctx.lineWidth = Math.max(1.1, r * 0.075);
+  ctx.stroke();
+
+  // Recessed creamy face cutout
+  const faceY = r * 0.09;
+  const faceRx = r * 0.66;
+  const faceRy = r * 0.56;
+  ctx.beginPath();
+  ctx.ellipse(0, faceY, faceRx, faceRy, 0, 0, TAU);
+  ctx.fillStyle = '#fff8f0';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(77, 38, 130, 0.35)';
+  ctx.lineWidth = Math.max(0.8, r * 0.05);
+  ctx.stroke();
+
+  // Embroidered golden Fumo eyes & playful smile
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(0, faceY, faceRx, faceRy, 0, 0, TAU);
+  ctx.clip();
+
+  drawFumoEyes(ctx, r, '#b57b18', '#ffd966', 'gentle', 'normal');
+  drawFumoBlush(ctx, r, '#ff98b2', false);
+  drawFumoMouth(ctx, r, 'gentle', 'normal');
+
+  // Golden parted Yukari bangs
+  ctx.beginPath();
+  ctx.moveTo(-faceRx * 1.08, faceY - faceRy * 1.12);
+  ctx.lineTo(faceRx * 1.08, faceY - faceRy * 1.12);
+  ctx.lineTo(faceRx * 1.04, faceY + r * 0.08);
+  ctx.quadraticCurveTo(r * 0.44, -r * 0.02, r * 0.28, -r * 0.08);
+  ctx.quadraticCurveTo(r * 0.12, r * 0.02, 0, -r * 0.08);
+  ctx.quadraticCurveTo(-r * 0.12, r * 0.02, -r * 0.28, -r * 0.08);
+  ctx.quadraticCurveTo(-r * 0.44, -r * 0.02, -faceRx * 1.04, faceY + r * 0.08);
+  ctx.closePath();
+  ctx.fillStyle = '#ffe582';
+  ctx.fill();
+  ctx.strokeStyle = '#9e701e';
+  ctx.lineWidth = Math.max(0.75, r * 0.045);
+  ctx.stroke();
+  ctx.restore();
+
+  // Signature white frilly mob cap with crimson ribbon
+  ctx.beginPath();
+  ctx.ellipse(0, -r * 0.86, r * 0.64, r * 0.3, 0, 0, TAU);
+  ctx.fillStyle = '#fff9f2';
+  ctx.fill();
+  ctx.strokeStyle = '#6c389c';
+  ctx.lineWidth = Math.max(0.9, r * 0.05);
+  ctx.stroke();
+
+  // Crimson bow on cap
+  drawPlushBow(ctx, 0, -r * 0.72, r * 0.34, '#e03652', '#ffe0a3', '#6e1424');
+
+  // Tiny Gap eye peeking on lower-right rim
+  drawMiniGapEye(ctx, r * 0.56, r * 0.56, r * 0.26, r * 0.16);
+
+  ctx.restore();
+}
+
+/**
+ * Draws one of the 11 adorable "苹果乐 × 东方 Fumo" matte velvety plushie fruits.
  */
 export function drawTouhouOrb(
   ctx: CanvasRenderingContext2D,
@@ -98,15 +241,16 @@ export function drawTouhouOrb(
   const scaleY = options.scaleY ?? 1;
   const flash = options.flash ?? 0;
   const iconMode = options.iconMode ?? false;
+  const faceState = options.faceState ?? 'normal';
 
   ctx.save();
   ctx.translate(x, y);
   if (angle !== 0) ctx.rotate(angle);
   if (scaleX !== 1 || scaleY !== 1) ctx.scale(scaleX, scaleY);
 
-  // Subtle baked soft ambient aura for high tiers
-  if (!iconMode && tier >= 8) {
-    const auraR = r * (tier === 10 ? 1.24 : 1.14);
+  // Subtle cozy aura for flagship high tiers (Reimu Apple & Suika Watermelon)
+  if (!iconMode && tier >= 9) {
+    const auraR = r * (tier === 10 ? 1.2 : 1.12);
     const aura = ctx.createRadialGradient(0, 0, r * 0.78, 0, 0, auraR);
     aura.addColorStop(0, def.glow);
     aura.addColorStop(1, 'rgba(0,0,0,0)');
@@ -116,187 +260,202 @@ export function drawTouhouOrb(
     ctx.fill();
   }
 
-  // 1. Back accessories (fluffy halo, wings, horns, bows, knives, phantom wisp)
-  drawBackAccessories(ctx, r, tier, iconMode);
+  // 1. Back plush accessories (wings, giant bows, oni horns, half-phantom puff, gourd)
+  drawPlushBackAccessories(ctx, r, tier, iconMode);
 
-  // 2. Main cel-shaded 3D sphere base
-  const sphereGrad = ctx.createRadialGradient(-r * 0.34, -r * 0.36, r * 0.06, 0, 0, r * 1.06);
-  sphereGrad.addColorStop(0, def.highlight);
-  sphereGrad.addColorStop(0.54, def.primary);
-  sphereGrad.addColorStop(1, def.secondary);
+  // 2. Four tiny stubby creamy-white plush nub limbs (四只小豆豆手脚, 苹果乐 signature!)
+  drawPlushNubLimbs(ctx, r, def.stitch, iconMode);
+
+  // 3. Soft matte velvety minky fruit plush body (NO plastic glass sheen!)
+  const bodyGrad = ctx.createRadialGradient(-r * 0.28, -r * 0.34, r * 0.08, 0, r * 0.06, r * 1.08);
+  bodyGrad.addColorStop(0, def.fruitLight);
+  bodyGrad.addColorStop(0.56, def.fruitBase);
+  bodyGrad.addColorStop(1, def.fruitShadow);
 
   ctx.beginPath();
   ctx.arc(0, 0, r, 0, TAU);
-  ctx.fillStyle = sphereGrad;
+  ctx.fillStyle = bodyGrad;
   ctx.fill();
 
-  // 3. Clipped interior layers: motifs, hair bangs, cel shadow, glossy specular & bounce rim
+  // 4. Clipped interior matte fruit textures, plush fabric shading & soft stitched seams
   ctx.save();
   ctx.beginPath();
   ctx.arc(0, 0, r, 0, TAU);
   ctx.clip();
 
-  // Character-specific inner patterns (stripes, clockwork, Hakkero, gap eyes, collars)
-  drawInnerMotifs(ctx, r, tier);
+  drawFruitPlushTexture(ctx, r, tier);
 
-  // Soft cel-shaded crescent shadow along bottom-right edge
+  // Gentle warm ambient minky shading (soft matte lower-right shadow)
   ctx.save();
   ctx.beginPath();
-  ctx.arc(0, 0, r * 1.04, 0, TAU);
-  ctx.arc(-r * 0.22, -r * 0.24, r * 0.96, 0, TAU, true);
-  ctx.fillStyle = tier === 0 ? 'rgba(130, 112, 185, 0.16)' : 'rgba(14, 8, 30, 0.22)';
+  ctx.arc(0, 0, r * 1.05, 0, TAU);
+  ctx.arc(-r * 0.2, -r * 0.24, r * 0.96, 0, TAU, true);
+  ctx.fillStyle = tier === 0 ? 'rgba(148, 126, 108, 0.14)' : 'rgba(54, 18, 16, 0.16)';
   ctx.fill('evenodd');
   ctx.restore();
 
-  // Distinct anime hair bangs & side-framing fringe (Tiers 1..10)
-  if (tier >= 1) {
-    drawAnimeHairBangs(ctx, r, tier);
+  // Wide diffused velvety peach-fuzz upper-left ambient light (completely matte)
+  const fuzz = ctx.createRadialGradient(-r * 0.32, -r * 0.42, 0, -r * 0.32, -r * 0.42, r * 0.62);
+  fuzz.addColorStop(0, 'rgba(255, 250, 240, 0.20)');
+  fuzz.addColorStop(0.65, 'rgba(255, 250, 240, 0.06)');
+  fuzz.addColorStop(1, 'rgba(255, 250, 240, 0)');
+  ctx.fillStyle = fuzz;
+  ctx.fillRect(-r, -r, r * 2, r * 2);
+
+  // Subtle plush vertical seam line peeks at outer edges on larger fruits
+  if (r >= 32) {
+    ctx.strokeStyle = 'rgba(255, 248, 236, 0.12)';
+    ctx.lineWidth = Math.max(0.8, r * 0.022);
+    ctx.setLineDash([r * 0.07, r * 0.06]);
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.92, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
-  // Glossy specular highlight crescent (upper-left candy glass sheen)
-  ctx.save();
-  ctx.translate(-r * 0.35, -r * 0.4);
-  ctx.rotate(-0.56);
-  const specGrad = ctx.createLinearGradient(0, -r * 0.18, 0, r * 0.18);
-  specGrad.addColorStop(0, 'rgba(255, 255, 255, 0.56)');
-  specGrad.addColorStop(1, 'rgba(255, 255, 255, 0.06)');
-  ctx.fillStyle = specGrad;
-  ctx.beginPath();
-  ctx.ellipse(0, 0, r * 0.34, r * 0.15, 0, 0, TAU);
-  ctx.fill();
-  ctx.restore();
+  ctx.restore(); // end fruit peel clip
 
-  // Crisp secondary sparkle dot
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+  // Soft plush rim & warm fabric stitch outline
   ctx.beginPath();
-  ctx.arc(-r * 0.54, -r * 0.16, Math.max(1, r * 0.058), 0, TAU);
-  ctx.fill();
-
-  // Luminous lower bounce rim light arc
-  ctx.beginPath();
-  ctx.arc(0, 0, r * 0.91, 0.16 * Math.PI, 0.84 * Math.PI);
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
-  ctx.lineWidth = Math.max(1.2, r * 0.055);
-  ctx.lineCap = 'round';
-  ctx.stroke();
-
-  ctx.restore(); // end sphere clip
-
-  // 4. Crisp doujin double-rim stroke (luminous inner rim + colored ink outline)
-  ctx.beginPath();
-  ctx.arc(0, 0, r - 0.6, 0, TAU);
+  ctx.arc(0, 0, r - 0.5, 0, TAU);
   ctx.strokeStyle = def.rim;
-  ctx.lineWidth = Math.max(1.4, Math.min(3.2, r * 0.052));
+  ctx.globalAlpha = 0.52;
+  ctx.lineWidth = Math.max(1.0, Math.min(2.4, r * 0.036));
   ctx.stroke();
+  ctx.globalAlpha = 1;
 
   ctx.beginPath();
-  ctx.arc(0, 0, r + 0.35, 0, TAU);
-  ctx.strokeStyle = def.ink;
-  ctx.lineWidth = Math.max(0.9, Math.min(2.0, r * 0.028));
+  ctx.arc(0, 0, r + 0.25, 0, TAU);
+  ctx.strokeStyle = def.stitch;
+  ctx.lineWidth = Math.max(1.05, Math.min(2.3, r * 0.034));
   ctx.stroke();
 
-  // 5. Expressive cel-shaded chibi anime face
-  drawChibiFace(ctx, r, tier);
+  // 5. Recessed creamy-white plush face cutout + authentic embroidered Fumo face + layered felt bangs!
+  drawFaceCutoutAndFumo(ctx, r, def, faceState);
 
-  // 6. Front signature headgear, ribbons, hats, hair tubes & charms
-  drawFrontAccessories(ctx, r, tier, iconMode);
+  // 6. Top fruit stem / leaf / calyx + miniature Touhou headgear & charms
+  drawTopFruitAndHeadgear(ctx, r, tier, iconMode);
 
-  // 7. Merge birth bright flash overlay (used when rendering uncached / icons)
+  // 7. Merge birth soft warm flash overlay
   if (flash > 0.01) {
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, TAU);
-    ctx.fillStyle = `rgba(255, 252, 232, ${flash * 0.58})`;
+    ctx.fillStyle = `rgba(255, 250, 230, ${flash * 0.52})`;
     ctx.fill();
   }
 
   ctx.restore();
 }
 
-function drawBackAccessories(
+/**
+ * Draws the 4 adorable stubby creamy-white plush nub limbs (四只小豆豆手脚)
+ * poking symmetrically from left/right and bottom-left/bottom-right — straight from 苹果乐!
+ */
+function drawPlushNubLimbs(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  outlineColor: string,
+  iconMode: boolean
+): void {
+  const ext = iconMode ? 0.9 : 1.0;
+  const strokeW = Math.max(0.95, Math.min(2.0, r * 0.042));
+
+  // Left & Right tiny stubby plush bean hands
+  for (const side of [-1, 1]) {
+    ctx.save();
+    ctx.translate(side * r * 0.95 * ext, r * 0.16);
+    ctx.rotate(side * 0.34);
+
+    const armGrad = ctx.createRadialGradient(-r * 0.04, -r * 0.05, 0, 0, 0, r * 0.24);
+    armGrad.addColorStop(0, '#fffdf9');
+    armGrad.addColorStop(0.68, '#f7ece1');
+    armGrad.addColorStop(1, '#e0cfc0');
+
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 0.19 * ext, r * 0.135 * ext, 0, 0, TAU);
+    ctx.fillStyle = armGrad;
+    ctx.fill();
+    ctx.strokeStyle = outlineColor;
+    ctx.lineWidth = strokeW;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Bottom-Left & Bottom-Right tiny stubby plush bean feet
+  for (const side of [-1, 1]) {
+    ctx.save();
+    ctx.translate(side * r * 0.44 * ext, r * 0.92 * ext);
+    ctx.rotate(side * -0.22);
+
+    const footGrad = ctx.createRadialGradient(0, -r * 0.04, 0, 0, 0, r * 0.24);
+    footGrad.addColorStop(0, '#fffdf8');
+    footGrad.addColorStop(0.68, '#f5e8dc');
+    footGrad.addColorStop(1, '#dcc8b8');
+
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 0.185 * ext, r * 0.135 * ext, 0, 0, TAU);
+    ctx.fillStyle = footGrad;
+    ctx.fill();
+    ctx.strokeStyle = outlineColor;
+    ctx.lineWidth = strokeW;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawPlushBackAccessories(
   ctx: CanvasRenderingContext2D,
   r: number,
   tier: number,
   iconMode: boolean
 ): void {
-  const ext = iconMode ? 0.84 : 1.0;
+  const ext = iconMode ? 0.86 : 1.0;
 
   switch (tier) {
     case 0: {
-      // 毛玉 (Kedama): lush fluffy cloud halo with soft pastel glow & scalloped fur puffs
-      const haloGrad = ctx.createRadialGradient(0, 0, r * 0.72, 0, 0, r * 1.35 * ext);
-      haloGrad.addColorStop(0, 'rgba(255, 246, 255, 0.55)');
-      haloGrad.addColorStop(1, 'rgba(255, 246, 255, 0)');
-      ctx.fillStyle = haloGrad;
-      ctx.beginPath();
-      ctx.arc(0, 0, r * 1.35 * ext, 0, TAU);
-      ctx.fill();
-
-      const lobes = 10;
-      ctx.fillStyle = '#fffdf9';
-      ctx.strokeStyle = '#9987c2';
-      ctx.lineWidth = Math.max(1.1, r * 0.075);
+      // 白玉果 · 毛玉: soft fluffy white cloud puffs behind the mochi fruit
+      const lobes = 8;
+      ctx.fillStyle = '#fffbf5';
+      ctx.strokeStyle = '#9c8a7a';
+      ctx.lineWidth = Math.max(0.95, r * 0.062);
       for (let i = 0; i < lobes; i++) {
-        const a = (TAU * i) / lobes + 0.15;
-        const px = Math.cos(a) * r * 0.86;
-        const py = Math.sin(a) * r * 0.86;
-        const pr = r * (i % 2 === 0 ? 0.28 : 0.22);
+        const a = (TAU * i) / lobes + 0.22;
+        const px = Math.cos(a) * r * 0.85;
+        const py = Math.sin(a) * r * 0.85;
+        const pr = r * (i % 2 === 0 ? 0.25 : 0.2);
         ctx.beginPath();
         ctx.arc(px, py, pr, 0, TAU);
         ctx.fill();
         ctx.stroke();
       }
-      // Re-fill inner cloud body to hide interior stroke seams
       ctx.beginPath();
-      ctx.arc(0, 0, r * 0.94, 0, TAU);
+      ctx.arc(0, 0, r * 0.93, 0, TAU);
       ctx.fill();
       break;
     }
 
     case 1: {
-      // 琪露诺 (Cirno): 6 crisp faceted translucent ice-crystal wings
-      const wingAngles = [-0.58, -0.1, 0.38];
+      // 蓝莓 · 琪露诺: 6 cute soft-plush translucent ice-crystal wings
+      const wingAngles = [-0.52, -0.06, 0.4];
       for (const side of [-1, 1]) {
         for (let k = 0; k < wingAngles.length; k++) {
           ctx.save();
           ctx.scale(side, 1);
           ctx.rotate(wingAngles[k]);
-          const len = r * (0.56 - k * 0.04) * ext;
+          const len = r * (0.48 - k * 0.03) * ext;
           const base = r * 0.82;
-          const halfW = r * 0.155;
-
-          // Crystal outer silhouette
-          const iceGrad = ctx.createLinearGradient(base, -halfW, base + len, halfW);
-          iceGrad.addColorStop(0, 'rgba(210, 252, 255, 0.94)');
-          iceGrad.addColorStop(0.55, 'rgba(104, 224, 255, 0.86)');
-          iceGrad.addColorStop(1, 'rgba(42, 152, 240, 0.92)');
+          const halfW = r * 0.14;
           ctx.beginPath();
           ctx.moveTo(base, 0);
-          ctx.lineTo(base + len * 0.45, -halfW);
+          ctx.lineTo(base + len * 0.46, -halfW);
           ctx.lineTo(base + len, 0);
-          ctx.lineTo(base + len * 0.45, halfW);
+          ctx.lineTo(base + len * 0.46, halfW);
           ctx.closePath();
-          ctx.fillStyle = iceGrad;
+          ctx.fillStyle = k === 1 ? '#b8f0ff' : '#8fdcff';
           ctx.fill();
-
-          // Upper bright facet sheen
-          ctx.beginPath();
-          ctx.moveTo(base, 0);
-          ctx.lineTo(base + len * 0.45, -halfW);
-          ctx.lineTo(base + len, 0);
-          ctx.closePath();
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.38)';
-          ctx.fill();
-
-          ctx.strokeStyle = '#1b5eb8';
-          ctx.lineWidth = Math.max(0.9, r * 0.045);
-          ctx.beginPath();
-          ctx.moveTo(base, 0);
-          ctx.lineTo(base + len * 0.45, -halfW);
-          ctx.lineTo(base + len, 0);
-          ctx.lineTo(base + len * 0.45, halfW);
-          ctx.closePath();
+          ctx.strokeStyle = '#2d68b5';
+          ctx.lineWidth = Math.max(0.85, r * 0.044);
           ctx.stroke();
-
           ctx.restore();
         }
       }
@@ -304,53 +463,41 @@ function drawBackAccessories(
     }
 
     case 2: {
-      // 露米娅 (Rumia): swirling shadowy darkness wisps around the rim
-      ctx.save();
-      for (let i = 0; i < 6; i++) {
-        const a = (TAU * i) / 6 + 0.35;
-        ctx.save();
-        ctx.rotate(a);
+      // 紫葡萄 · 露米娅: cute pair of small grape buddy-berries tucked at upper back sides
+      for (const side of [-1, 1]) {
         ctx.beginPath();
-        ctx.moveTo(r * 0.84, -r * 0.14);
-        ctx.quadraticCurveTo(r * 1.24 * ext, -r * 0.28 * ext, r * 1.22 * ext, r * 0.08);
-        ctx.quadraticCurveTo(r * 1.04 * ext, r * 0.02, r * 0.86, r * 0.16);
-        ctx.closePath();
-        ctx.fillStyle = i % 2 === 0 ? 'rgba(22, 13, 44, 0.88)' : 'rgba(58, 36, 102, 0.78)';
+        ctx.arc(side * r * 0.72 * ext, -r * 0.68 * ext, r * 0.26 * ext, 0, TAU);
+        ctx.fillStyle = side < 0 ? '#784eb0' : '#5e3691';
         ctx.fill();
-        ctx.strokeStyle = 'rgba(235, 77, 101, 0.45)';
-        ctx.lineWidth = Math.max(0.8, r * 0.03);
+        ctx.strokeStyle = '#2d1547';
+        ctx.lineWidth = Math.max(0.9, r * 0.038);
         ctx.stroke();
-        ctx.restore();
       }
-      ctx.restore();
       break;
     }
 
     case 3: {
-      // 芙兰朵露 (Flandre): 7-color crystal wing gems + flowing golden side-tail!
+      // 草莓 · 芙兰朵露: mini 7-color crystal felt wings + golden side-tail
       const leftGems = [
-        { x: 0.94, y: -0.48, c: '#ff3b5c' }, // Red
-        { x: 1.12, y: -0.34, c: '#ff922b' }, // Orange
-        { x: 1.24, y: -0.14, c: '#ffe047' }, // Yellow
-        { x: 1.26, y: 0.12, c: '#2ee68a' },  // Green
+        { x: 0.94, y: -0.44, c: '#ff4d6a' },
+        { x: 1.12, y: -0.26, c: '#ff9d3b' },
+        { x: 1.2, y: -0.04, c: '#ffe052' },
+        { x: 1.16, y: 0.2, c: '#48db96' },
       ];
       const rightGems = [
-        { x: 0.96, y: -0.46, c: '#38d9ff' }, // Cyan
-        { x: 1.16, y: -0.24, c: '#4f6ef7' }, // Blue
-        { x: 1.24, y: 0.04, c: '#a84dff' },  // Violet
+        { x: 0.94, y: -0.42, c: '#54d8ff' },
+        { x: 1.14, y: -0.18, c: '#5c7cfa' },
+        { x: 1.18, y: 0.1, c: '#b366ff' },
       ];
 
-      ctx.save();
       for (const side of [-1, 1]) {
         ctx.save();
         ctx.scale(side, 1);
-        // Sculpted dark iron candelabra wing frame
         ctx.beginPath();
-        ctx.moveTo(r * 0.72, -r * 0.06);
-        ctx.quadraticCurveTo(r * 1.12 * ext, -r * 0.56 * ext, r * 1.28 * ext, -r * 0.05);
-        ctx.quadraticCurveTo(r * 1.26 * ext, r * 0.14 * ext, r * 1.12 * ext, r * 0.22 * ext);
-        ctx.strokeStyle = '#2d192c';
-        ctx.lineWidth = Math.max(1.6, r * 0.07);
+        ctx.moveTo(r * 0.74, -r * 0.08);
+        ctx.quadraticCurveTo(r * 1.1 * ext, -r * 0.48 * ext, r * 1.2 * ext, 0.06 * r);
+        ctx.strokeStyle = '#47222d';
+        ctx.lineWidth = Math.max(1.4, r * 0.056);
         ctx.lineCap = 'round';
         ctx.stroke();
 
@@ -358,190 +505,103 @@ function drawBackAccessories(
         for (const g of gems) {
           const gx = r * g.x * ext;
           const gy = r * g.y * ext;
-          const gw = r * 0.105;
-          const gh = r * 0.145;
-          // Gem glow
+          const gw = r * 0.095;
+          const gh = r * 0.125;
+          ctx.beginPath();
+          ctx.moveTo(gx, gy - gh);
+          ctx.lineTo(gx + gw, gy);
+          ctx.lineTo(gx, gy + gh);
+          ctx.lineTo(gx - gw, gy);
+          ctx.closePath();
           ctx.fillStyle = g.c;
-          ctx.beginPath();
-          ctx.moveTo(gx, gy - gh);
-          ctx.lineTo(gx + gw, gy);
-          ctx.lineTo(gx, gy + gh);
-          ctx.lineTo(gx - gw, gy);
-          ctx.closePath();
           ctx.fill();
-          // Bright top facet
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
-          ctx.beginPath();
-          ctx.moveTo(gx, gy - gh);
-          ctx.lineTo(gx + gw, gy);
-          ctx.lineTo(gx, gy);
-          ctx.closePath();
-          ctx.fill();
-          // Crisp border
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = Math.max(0.8, r * 0.026);
-          ctx.beginPath();
-          ctx.moveTo(gx, gy - gh);
-          ctx.lineTo(gx + gw, gy);
-          ctx.lineTo(gx, gy + gh);
-          ctx.lineTo(gx - gw, gy);
-          ctx.closePath();
+          ctx.strokeStyle = '#fff9f2';
+          ctx.lineWidth = Math.max(0.75, r * 0.025);
           ctx.stroke();
         }
         ctx.restore();
       }
-
-      // Flandre's signature flowing golden side-tail on her right side
-      ctx.beginPath();
-      ctx.moveTo(r * 0.62, -r * 0.54);
-      ctx.quadraticCurveTo(r * 1.12 * ext, -r * 0.36 * ext, r * 1.04 * ext, r * 0.36 * ext);
-      ctx.quadraticCurveTo(r * 0.84 * ext, r * 0.26 * ext, r * 0.72, -r * 0.12);
-      ctx.closePath();
-      const tailGrad = ctx.createLinearGradient(r * 0.6, -r * 0.5, r * 1.05, r * 0.35);
-      tailGrad.addColorStop(0, '#fff099');
-      tailGrad.addColorStop(0.6, '#ffd24d');
-      tailGrad.addColorStop(1, '#d99826');
-      ctx.fillStyle = tailGrad;
-      ctx.fill();
-      ctx.strokeStyle = '#4a1426';
-      ctx.lineWidth = Math.max(1, r * 0.035);
-      ctx.stroke();
-      ctx.restore();
       break;
     }
 
     case 4: {
-      // 蕾米莉亚 (Remilia): sculpted scarlet-rimmed gothic bat wings
+      // 橘子 · 橙: cute twin orange plush cat tails peeking out on the right side
       ctx.save();
-      for (const side of [-1, 1]) {
-        ctx.save();
-        ctx.scale(side, 1);
-        ctx.beginPath();
-        ctx.moveTo(r * 0.76, -r * 0.1);
-        ctx.quadraticCurveTo(r * 1.1 * ext, -r * 0.62 * ext, r * 1.34 * ext, -r * 0.3 * ext);
-        ctx.quadraticCurveTo(r * 1.2 * ext, -r * 0.04, r * 1.26 * ext, r * 0.18 * ext);
-        ctx.quadraticCurveTo(r * 1.08 * ext, r * 0.08, r * 1.02 * ext, r * 0.28 * ext);
-        ctx.quadraticCurveTo(r * 0.9 * ext, r * 0.14, r * 0.76, r * 0.24);
-        ctx.closePath();
-        const wingGrad = ctx.createLinearGradient(r * 0.76, -r * 0.4, r * 1.3, r * 0.25);
-        wingGrad.addColorStop(0, '#4a0c24');
-        wingGrad.addColorStop(1, '#1e0410');
-        ctx.fillStyle = wingGrad;
-        ctx.fill();
-        ctx.strokeStyle = '#eb3b5a';
-        ctx.lineWidth = Math.max(1.1, r * 0.038);
-        ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(r * 0.78, r * 0.45);
+      ctx.quadraticCurveTo(r * 1.24 * ext, r * 0.48, r * 1.14 * ext, r * 0.04);
+      ctx.strokeStyle = '#6e2e0b';
+      ctx.lineWidth = Math.max(3.2, r * 0.16);
+      ctx.lineCap = 'round';
+      ctx.stroke();
+      ctx.strokeStyle = '#f28b30';
+      ctx.lineWidth = Math.max(2.0, r * 0.11);
+      ctx.stroke();
 
-        // Inner wing rib vein
-        ctx.beginPath();
-        ctx.moveTo(r * 0.84, -r * 0.08);
-        ctx.quadraticCurveTo(r * 1.06 * ext, -r * 0.2 * ext, r * 1.22 * ext, r * 0.12 * ext);
-        ctx.strokeStyle = 'rgba(255, 110, 140, 0.5)';
-        ctx.lineWidth = Math.max(0.8, r * 0.022);
-        ctx.stroke();
-        ctx.restore();
-      }
+      // Second little tail tip (bakeneko Chen!)
+      ctx.beginPath();
+      ctx.moveTo(r * 0.82, r * 0.56);
+      ctx.quadraticCurveTo(r * 1.26 * ext, r * 0.72, r * 1.24 * ext, r * 0.34);
+      ctx.strokeStyle = '#6e2e0b';
+      ctx.lineWidth = Math.max(2.8, r * 0.14);
+      ctx.stroke();
+      ctx.strokeStyle = '#ffac59';
+      ctx.lineWidth = Math.max(1.7, r * 0.092);
+      ctx.stroke();
       ctx.restore();
       break;
     }
 
     case 5: {
-      // 十六夜咲夜 (Sakuya): crossed glistening silver throwing knives behind shoulders
+      // 青苹果 · 魂魄妖梦: adorable fluffy white half-phantom (半灵) plush puff!
       ctx.save();
-      for (const side of [-1, 1]) {
-        ctx.save();
-        ctx.scale(side, 1);
-        ctx.rotate(-0.52);
-        // Silver blade extending out upper-side
-        ctx.beginPath();
-        ctx.moveTo(r * 0.76, -r * 0.08);
-        ctx.lineTo(r * 1.26 * ext, -r * 0.03);
-        ctx.lineTo(r * 1.36 * ext, 0.02);
-        ctx.lineTo(r * 1.22 * ext, r * 0.09);
-        ctx.lineTo(r * 0.76, r * 0.07);
-        ctx.closePath();
-        const bladeGrad = ctx.createLinearGradient(r * 0.76, -r * 0.08, r * 1.34, r * 0.08);
-        bladeGrad.addColorStop(0, '#eef4ff');
-        bladeGrad.addColorStop(0.5, '#b8c8eb');
-        bladeGrad.addColorStop(1, '#ffffff');
-        ctx.fillStyle = bladeGrad;
-        ctx.fill();
-        ctx.strokeStyle = '#2d3f75';
-        ctx.lineWidth = Math.max(0.9, r * 0.026);
-        ctx.stroke();
-        // Blade center bevel highlight
-        ctx.beginPath();
-        ctx.moveTo(r * 0.82, 0);
-        ctx.lineTo(r * 1.28 * ext, 0);
-        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-        ctx.lineWidth = Math.max(0.7, r * 0.018);
-        ctx.stroke();
-        ctx.restore();
-      }
-      ctx.restore();
-      break;
-    }
-
-    case 6: {
-      // 魂魄妖梦 (Youmu): glowing ghostly half-phantom wisp (半灵) + trailing ribbon ends
-      ctx.save();
-      const wx = r * 0.96 * ext;
+      const wx = r * 1.0 * ext;
       const wy = -r * 0.36 * ext;
       const wr = r * 0.25;
 
-      // Soft ghostly mint aura
-      const aura = ctx.createRadialGradient(wx, wy, wr * 0.2, wx, wy, wr * 1.85);
-      aura.addColorStop(0, 'rgba(175, 255, 228, 0.65)');
-      aura.addColorStop(1, 'rgba(175, 255, 228, 0)');
-      ctx.fillStyle = aura;
+      // Soft ghostly mint-cream plush puff
       ctx.beginPath();
-      ctx.arc(wx, wy, wr * 1.85, 0, TAU);
-      ctx.fill();
-
-      // Ghostly teardrop body + swirled spirit tail
-      ctx.beginPath();
-      ctx.arc(wx, wy, wr, Math.PI * 0.82, Math.PI * 2.25);
-      ctx.quadraticCurveTo(wx + wr * 1.15, wy + wr * 1.35, wx + wr * 1.55, wy + wr * 0.85);
-      ctx.quadraticCurveTo(wx + wr * 0.85, wy + wr * 1.95, wx - wr * 0.28, wy + wr * 0.96);
+      ctx.arc(wx, wy, wr, Math.PI * 0.78, Math.PI * 2.28);
+      ctx.quadraticCurveTo(wx + wr * 1.05, wy + wr * 1.2, wx + wr * 1.4, wy + wr * 0.72);
+      ctx.quadraticCurveTo(wx + wr * 0.75, wy + wr * 1.75, wx - wr * 0.28, wy + wr * 0.88);
       ctx.closePath();
-      const wispGrad = ctx.createRadialGradient(wx - wr * 0.25, wy - wr * 0.25, wr * 0.1, wx, wy, wr * 1.4);
+      const wispGrad = ctx.createRadialGradient(wx - wr * 0.2, wy - wr * 0.2, wr * 0.1, wx, wy, wr * 1.3);
       wispGrad.addColorStop(0, '#ffffff');
-      wispGrad.addColorStop(0.65, '#d6fff0');
-      wispGrad.addColorStop(1, '#7ff0c6');
+      wispGrad.addColorStop(0.7, '#e8faf2');
+      wispGrad.addColorStop(1, '#bcead8');
       ctx.fillStyle = wispGrad;
       ctx.fill();
-      ctx.strokeStyle = '#38a888';
+      ctx.strokeStyle = '#3c7d66';
       ctx.lineWidth = Math.max(1, r * 0.028);
       ctx.stroke();
 
-      // Cute tiny gleam inside wisp
-      ctx.fillStyle = '#ffffff';
+      // Tiny sleepy dot eyes on the half-phantom plush!
+      ctx.fillStyle = '#3c7d66';
       ctx.beginPath();
-      ctx.ellipse(wx - wr * 0.26, wy - wr * 0.24, wr * 0.24, wr * 0.14, -0.4, 0, TAU);
+      ctx.arc(wx - wr * 0.26, wy - wr * 0.04, Math.max(0.8, wr * 0.1), 0, TAU);
+      ctx.arc(wx + wr * 0.22, wy - wr * 0.04, Math.max(0.8, wr * 0.1), 0, TAU);
       ctx.fill();
       ctx.restore();
       break;
     }
 
     case 7: {
-      // 雾雨魔理沙 (Marisa): fluffy golden side-braid curls framing behind orb
+      // 水蜜桃 · 蕾米莉亚: mini plush gothic bat wings
       ctx.save();
       for (const side of [-1, 1]) {
         ctx.save();
         ctx.scale(side, 1);
         ctx.beginPath();
-        ctx.moveTo(r * 0.72, -r * 0.22);
-        ctx.quadraticCurveTo(r * 1.16 * ext, r * 0.04, r * 1.06 * ext, r * 0.56 * ext);
-        ctx.quadraticCurveTo(r * 0.86 * ext, r * 0.62 * ext, r * 0.74, r * 0.34);
+        ctx.moveTo(r * 0.8, -r * 0.12);
+        ctx.quadraticCurveTo(r * 1.08 * ext, -r * 0.54 * ext, r * 1.28 * ext, -r * 0.24 * ext);
+        ctx.quadraticCurveTo(r * 1.15 * ext, -r * 0.02, r * 1.2 * ext, r * 0.16 * ext);
+        ctx.quadraticCurveTo(r * 1.04 * ext, r * 0.08, r * 0.98 * ext, r * 0.24 * ext);
+        ctx.quadraticCurveTo(r * 0.88 * ext, r * 0.14, r * 0.78, r * 0.2);
         ctx.closePath();
-        const curlGrad = ctx.createLinearGradient(r * 0.7, -r * 0.2, r * 1.1, r * 0.6);
-        curlGrad.addColorStop(0, '#fff099');
-        curlGrad.addColorStop(0.55, '#ffd447');
-        curlGrad.addColorStop(1, '#c98e18');
-        ctx.fillStyle = curlGrad;
+        ctx.fillStyle = '#471a30';
         ctx.fill();
-        ctx.strokeStyle = '#1f1438';
-        ctx.lineWidth = Math.max(1.1, r * 0.028);
+        ctx.strokeStyle = '#d9486a';
+        ctx.lineWidth = Math.max(1.0, r * 0.028);
         ctx.stroke();
         ctx.restore();
       }
@@ -550,61 +610,39 @@ function drawBackAccessories(
     }
 
     case 8: {
-      // 博丽灵梦 (Reimu): massive iconic sweeping crimson shrine maiden ribbon bow!
-      ctx.save();
-      for (const side of [-1, 1]) {
-        ctx.save();
-        ctx.scale(side, 1);
-        // Main sweeping upper wing
-        ctx.beginPath();
-        ctx.moveTo(0, -r * 0.84);
-        ctx.quadraticCurveTo(r * 0.56 * ext, -r * 1.38 * ext, r * 1.12 * ext, -r * 0.92 * ext);
-        ctx.lineTo(r * 0.88 * ext, -r * 0.42 * ext);
-        ctx.quadraticCurveTo(r * 0.42 * ext, -r * 0.66 * ext, 0, -r * 0.72);
-        ctx.closePath();
-        const bowGrad = ctx.createLinearGradient(0, -r * 1.25, r * 1.0, -r * 0.5);
-        bowGrad.addColorStop(0, '#ff4d63');
-        bowGrad.addColorStop(0.55, '#db1f38');
-        bowGrad.addColorStop(1, '#990e22');
-        ctx.fillStyle = bowGrad;
-        ctx.fill();
-        ctx.strokeStyle = '#fff5e6';
-        ctx.lineWidth = Math.max(1.5, r * 0.032);
-        ctx.stroke();
-
-        // Subtle inner ribbon fold line
-        ctx.beginPath();
-        ctx.moveTo(r * 0.16, -r * 0.82);
-        ctx.quadraticCurveTo(r * 0.56 * ext, -r * 0.94 * ext, r * 0.86 * ext, -r * 0.72 * ext);
-        ctx.strokeStyle = 'rgba(255, 232, 232, 0.45)';
-        ctx.lineWidth = Math.max(1, r * 0.022);
-        ctx.stroke();
-        ctx.restore();
-      }
-      ctx.restore();
+      // 菠萝 · 雾雨魔理沙: lush green plush pineapple leaf crown behind the hat!
+      drawPineappleLeafCrown(ctx, r, ext);
       break;
     }
 
     case 9: {
-      // 八云紫 (Yukari): flowing golden waves + twin mystic violet Gap ribbon edges
+      // 红富士大苹果 · 博丽灵梦: iconic sweeping giant crimson-white shrine ribbon bow!
       ctx.save();
       for (const side of [-1, 1]) {
         ctx.save();
         ctx.scale(side, 1);
-        // Golden flowing hair locks behind sides
         ctx.beginPath();
-        ctx.moveTo(r * 0.76, -r * 0.34);
-        ctx.quadraticCurveTo(r * 1.16 * ext, -r * 0.02, r * 1.08 * ext, r * 0.56 * ext);
-        ctx.quadraticCurveTo(r * 0.86 * ext, r * 0.66 * ext, r * 0.72, r * 0.34);
+        ctx.moveTo(0, -r * 0.82);
+        ctx.quadraticCurveTo(r * 0.58 * ext, -r * 1.38 * ext, r * 1.14 * ext, -r * 0.88 * ext);
+        ctx.quadraticCurveTo(r * 1.05 * ext, -r * 0.58 * ext, r * 0.86 * ext, -r * 0.42 * ext);
+        ctx.quadraticCurveTo(r * 0.42 * ext, -r * 0.64 * ext, 0, -r * 0.7);
         ctx.closePath();
-        const lockGrad = ctx.createLinearGradient(r * 0.7, -r * 0.3, r * 1.1, r * 0.6);
-        lockGrad.addColorStop(0, '#fff2ad');
-        lockGrad.addColorStop(0.6, '#f2c85b');
-        lockGrad.addColorStop(1, '#c48f25');
-        ctx.fillStyle = lockGrad;
+        const bowGrad = ctx.createLinearGradient(0, -r * 1.25, r * 1.05, -r * 0.48);
+        bowGrad.addColorStop(0, '#f24b59');
+        bowGrad.addColorStop(0.6, '#cf2538');
+        bowGrad.addColorStop(1, '#9e1929');
+        ctx.fillStyle = bowGrad;
         ctx.fill();
-        ctx.strokeStyle = '#38155e';
-        ctx.lineWidth = Math.max(1.2, r * 0.024);
+        ctx.strokeStyle = '#fff5ea';
+        ctx.lineWidth = Math.max(1.4, r * 0.028);
+        ctx.stroke();
+
+        // Warm plush fold stitch line
+        ctx.beginPath();
+        ctx.moveTo(r * 0.18, -r * 0.82);
+        ctx.quadraticCurveTo(r * 0.54 * ext, -r * 0.94 * ext, r * 0.84 * ext, -r * 0.72 * ext);
+        ctx.strokeStyle = 'rgba(255, 236, 224, 0.42)';
+        ctx.lineWidth = Math.max(0.9, r * 0.018);
         ctx.stroke();
         ctx.restore();
       }
@@ -613,351 +651,312 @@ function drawBackAccessories(
     }
 
     case 10: {
-      // 伊吹萃香 (Ibuki Suika): majestic curved golden-amber oni horns + festive sake aura!
+      // 大西瓜 · 伊吹萃香: curved golden-amber plush oni horns + mini sake gourd!
       ctx.save();
       for (const side of [-1, 1]) {
         ctx.save();
         ctx.scale(side, 1);
-        const hornGrad = ctx.createLinearGradient(r * 0.28, -r * 0.74, r * 0.72, -r * 1.38);
-        hornGrad.addColorStop(0, '#b85314');
-        hornGrad.addColorStop(0.45, '#f5a623');
-        hornGrad.addColorStop(0.85, '#ffe066');
-        hornGrad.addColorStop(1, '#fff8cc');
+        const hornGrad = ctx.createLinearGradient(r * 0.25, -r * 0.72, r * 0.7, -r * 1.34);
+        hornGrad.addColorStop(0, '#c46521');
+        hornGrad.addColorStop(0.5, '#f2ad42');
+        hornGrad.addColorStop(1, '#ffea99');
         ctx.beginPath();
-        ctx.moveTo(r * 0.22, -r * 0.82);
+        ctx.moveTo(r * 0.24, -r * 0.82);
         ctx.bezierCurveTo(
-          r * 0.56 * ext,
-          -r * 0.96 * ext,
-          r * 0.8 * ext,
-          -r * 1.18 * ext,
-          r * 0.64 * ext,
-          -r * 1.38 * ext
+          r * 0.54 * ext,
+          -r * 0.94 * ext,
+          r * 0.78 * ext,
+          -r * 1.15 * ext,
+          r * 0.62 * ext,
+          -r * 1.36 * ext
         );
         ctx.bezierCurveTo(
-          r * 0.52 * ext,
-          -r * 1.2 * ext,
+          r * 0.5 * ext,
+          -r * 1.18 * ext,
           r * 0.42 * ext,
-          -r * 1.02 * ext,
+          -r * 1.0 * ext,
           r * 0.48,
           -r * 0.72
         );
         ctx.closePath();
         ctx.fillStyle = hornGrad;
         ctx.fill();
-        ctx.strokeStyle = '#4a1d08';
-        ctx.lineWidth = Math.max(1.4, r * 0.028);
-        ctx.stroke();
-
-        // Sculpted golden horn ridge rings
-        ctx.strokeStyle = 'rgba(145, 58, 12, 0.42)';
-        ctx.lineWidth = Math.max(1, r * 0.018);
-        for (const t of [0.28, 0.52, 0.74]) {
-          const hx = r * (0.36 + t * 0.26) * ext;
-          const hy = -r * (0.86 + t * 0.34) * ext;
-          ctx.beginPath();
-          ctx.arc(hx, hy, r * (0.12 - t * 0.05), 0.2, Math.PI * 0.85);
-          ctx.stroke();
-        }
-        ctx.restore();
-      }
-
-      // Ginger-orange fluffy spiky side hair tufts peeking from behind watermelon silhouette
-      for (const side of [-1, 1]) {
-        ctx.save();
-        ctx.scale(side, 1);
-        ctx.beginPath();
-        ctx.moveTo(r * 0.84, -r * 0.28);
-        ctx.quadraticCurveTo(r * 1.14 * ext, -r * 0.12, r * 1.05 * ext, r * 0.16);
-        ctx.quadraticCurveTo(r * 0.92 * ext, r * 0.1, r * 0.84, r * 0.26);
-        ctx.closePath();
-        ctx.fillStyle = '#ff9248';
-        ctx.fill();
-        ctx.strokeStyle = '#5c220a';
-        ctx.lineWidth = Math.max(1.2, r * 0.022);
+        ctx.strokeStyle = '#59280e';
+        ctx.lineWidth = Math.max(1.3, r * 0.025);
         ctx.stroke();
         ctx.restore();
       }
+
+      // Cute miniature plush Ibuki sake gourd tucked on lower-right side
+      ctx.save();
+      ctx.translate(r * 0.96 * ext, -r * 0.26 * ext);
+      ctx.rotate(0.28);
+      ctx.fillStyle = '#e8aa4d';
+      ctx.strokeStyle = '#5c2d10';
+      ctx.lineWidth = Math.max(1.0, r * 0.022);
+      ctx.beginPath();
+      ctx.arc(0, r * 0.12, r * 0.145, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, -r * 0.05, r * 0.1, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+      // Red ribbon tied around gourd waist
+      ctx.strokeStyle = '#db2b42';
+      ctx.lineWidth = Math.max(1.4, r * 0.032);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.09, r * 0.02);
+      ctx.lineTo(r * 0.09, r * 0.02);
+      ctx.stroke();
+      ctx.restore();
+
       ctx.restore();
       break;
     }
   }
 }
 
-function drawInnerMotifs(ctx: CanvasRenderingContext2D, r: number, tier: number): void {
+function drawPineappleLeafCrown(ctx: CanvasRenderingContext2D, r: number, ext: number): void {
+  ctx.save();
+  const leaves = [
+    { ang: -0.62, len: 0.44, w: 0.13, c: '#3f9946' },
+    { ang: 0.62, len: 0.44, w: 0.13, c: '#3f9946' },
+    { ang: -0.32, len: 0.56, w: 0.15, c: '#54b858' },
+    { ang: 0.32, len: 0.56, w: 0.15, c: '#54b858' },
+    { ang: 0, len: 0.62, w: 0.16, c: '#6ed16b' },
+  ];
+  for (const lf of leaves) {
+    ctx.save();
+    ctx.translate(0, -r * 0.86);
+    ctx.rotate(lf.ang);
+    ctx.beginPath();
+    ctx.moveTo(-r * lf.w, r * 0.06);
+    ctx.quadraticCurveTo(-r * lf.w * 0.7, -r * lf.len * 0.6 * ext, 0, -r * lf.len * ext);
+    ctx.quadraticCurveTo(r * lf.w * 0.7, -r * lf.len * 0.6 * ext, r * lf.w, r * 0.06);
+    ctx.closePath();
+    ctx.fillStyle = lf.c;
+    ctx.fill();
+    ctx.strokeStyle = '#245c2a';
+    ctx.lineWidth = Math.max(1.0, r * 0.022);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawFruitPlushTexture(ctx: CanvasRenderingContext2D, r: number, tier: number): void {
   switch (tier) {
     case 0: {
-      // Kedama: soft dreamy pastel center glow
-      const g = ctx.createRadialGradient(0, r * 0.1, 0, 0, r * 0.1, r * 0.85);
-      g.addColorStop(0, 'rgba(255, 232, 245, 0.35)');
-      g.addColorStop(1, 'rgba(255, 232, 245, 0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(-r, -r, r * 2, r * 2);
+      // 白玉果: gentle top fruit dimple shadow
+      ctx.fillStyle = 'rgba(182, 162, 140, 0.24)';
+      ctx.beginPath();
+      ctx.ellipse(0, -r * 0.84, r * 0.28, r * 0.1, 0, 0, TAU);
+      ctx.fill();
       break;
     }
 
     case 1: {
-      // Cirno: crisp ice-crystal lower collar facets + frost ⑨ emblem
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.26)';
-      ctx.beginPath();
-      ctx.moveTo(-r * 0.6, r * 0.62);
-      ctx.lineTo(-r * 0.18, r * 0.86);
-      ctx.lineTo(0, r * 0.64);
-      ctx.lineTo(r * 0.18, r * 0.86);
-      ctx.lineTo(r * 0.6, r * 0.62);
-      ctx.lineTo(r * 0.72, r * 1.05);
-      ctx.lineTo(-r * 0.72, r * 1.05);
-      ctx.closePath();
-      ctx.fill();
-
-      if (r >= 16) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.82)';
-        ctx.font = `800 ${Math.round(r * 0.4)}px system-ui, sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('⑨', r * 0.5, r * 0.46);
+      // 蓝莓: soft matte powdery bloom + subtle plush panel stitch curves
+      ctx.strokeStyle = 'rgba(220, 244, 255, 0.24)';
+      ctx.lineWidth = Math.max(0.8, r * 0.032);
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.arc(side * r * 0.55, 0, r * 0.85, side < 0 ? -0.9 : Math.PI - 0.9, side < 0 ? 0.9 : Math.PI + 0.9);
+        ctx.stroke();
       }
       break;
     }
 
     case 2: {
-      // Rumia: twilight shadow & iconic white blouse + crimson vest ribbon
-      ctx.fillStyle = 'rgba(255, 248, 252, 0.82)';
-      ctx.beginPath();
-      ctx.arc(0, r * 1.1, r * 0.56, Math.PI * 1.15, Math.PI * 1.85);
-      ctx.fill();
-      ctx.strokeStyle = '#eb3b5a';
-      ctx.lineWidth = Math.max(1.6, r * 0.085);
-      ctx.beginPath();
-      ctx.arc(0, r * 0.96, r * 0.55, Math.PI * 1.18, Math.PI * 1.82);
-      ctx.stroke();
+      // 紫葡萄: soft velvety bloom highlights on cheeks
+      const bloom = ctx.createRadialGradient(-r * 0.58, -r * 0.35, 0, -r * 0.58, -r * 0.35, r * 0.48);
+      bloom.addColorStop(0, 'rgba(228, 206, 255, 0.24)');
+      bloom.addColorStop(1, 'rgba(228, 206, 255, 0)');
+      ctx.fillStyle = bloom;
+      ctx.fillRect(-r, -r, r * 2, r * 2);
       break;
     }
 
     case 3: {
-      // Flandre: crimson Scarlet dress collar & bright golden ascot tie
-      const dress = ctx.createLinearGradient(0, r * 0.32, 0, r);
-      dress.addColorStop(0, 'rgba(219, 56, 78, 0)');
-      dress.addColorStop(0.6, 'rgba(195, 28, 56, 0.65)');
-      dress.addColorStop(1, 'rgba(138, 12, 36, 0.88)');
-      ctx.fillStyle = dress;
-      ctx.fillRect(-r, r * 0.32, r * 2, r * 0.75);
-
-      // Cute white ruffled collar V
-      ctx.fillStyle = '#fff5f7';
-      ctx.beginPath();
-      ctx.moveTo(-r * 0.36, r * 0.62);
-      ctx.lineTo(0, r * 0.84);
-      ctx.lineTo(r * 0.36, r * 0.62);
-      ctx.lineTo(r * 0.22, r * 0.96);
-      ctx.lineTo(-r * 0.22, r * 0.96);
-      ctx.closePath();
-      ctx.fill();
+      // 草莓: cute golden-yellow embroidered strawberry seeds around the red peel!
+      const seeds: Array<[number, number, number]> = [
+        [-0.76, -0.34, -0.3],
+        [0.76, -0.34, 0.3],
+        [-0.82, 0.1, -0.1],
+        [0.82, 0.1, 0.1],
+        [-0.68, 0.54, 0.28],
+        [0.68, 0.54, -0.28],
+        [-0.3, 0.78, 0.12],
+        [0.3, 0.78, -0.12],
+        [0, 0.84, 0],
+      ];
+      ctx.fillStyle = '#ffe580';
+      ctx.strokeStyle = '#996018';
+      ctx.lineWidth = Math.max(0.6, r * 0.02);
+      for (const [sx, sy, rot] of seeds) {
+        ctx.save();
+        ctx.translate(sx * r, sy * r);
+        ctx.rotate(rot);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, r * 0.045, r * 0.072, 0, 0, TAU);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
       break;
     }
 
     case 4: {
-      // Remilia: soft pale-pink aristocratic blouse collar + ruby jewel brooch
-      ctx.fillStyle = 'rgba(255, 232, 240, 0.86)';
-      ctx.beginPath();
-      ctx.arc(0, r * 1.08, r * 0.58, Math.PI * 1.12, Math.PI * 1.88);
-      ctx.fill();
-
-      // Crimson gem brooch at collar center
-      ctx.fillStyle = '#ff2a55';
-      ctx.strokeStyle = '#ffe082';
-      ctx.lineWidth = Math.max(1, r * 0.028);
-      ctx.beginPath();
-      ctx.arc(0, r * 0.68, r * 0.11, 0, TAU);
-      ctx.fill();
-      ctx.stroke();
+      // 橘子: subtle citrus dimple pores around outer tangerine peel
+      ctx.fillStyle = 'rgba(166, 68, 12, 0.22)';
+      const pores: Array<[number, number]> = [
+        [-0.78, -0.28], [-0.84, 0.08], [-0.72, 0.44], [-0.46, 0.74],
+        [0.78, -0.28], [0.84, 0.08], [0.72, 0.44], [0.46, 0.74],
+        [-0.62, -0.56], [0.62, -0.56], [0, 0.82],
+      ];
+      for (const [px, py] of pores) {
+        ctx.beginPath();
+        ctx.arc(px * r, py * r, Math.max(0.8, r * 0.03), 0, TAU);
+        ctx.fill();
+      }
       break;
     }
 
     case 5: {
-      // Sakuya: crisp golden-silver pocket-watch dial watermark + white maid collar
-      ctx.save();
-      ctx.strokeStyle = 'rgba(245, 208, 108, 0.42)';
-      ctx.lineWidth = Math.max(1.1, r * 0.03);
+      // 青苹果: cozy top apple cleft shadow + soft light-apple cheek blush
+      ctx.fillStyle = 'rgba(52, 112, 34, 0.26)';
       ctx.beginPath();
-      ctx.arc(0, r * 0.04, r * 0.76, 0, TAU);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(0, r * 0.04, r * 0.68, 0, TAU);
-      ctx.strokeStyle = 'rgba(245, 208, 108, 0.22)';
-      ctx.stroke();
-
-      for (let h = 0; h < 12; h++) {
-        const a = (TAU * h) / 12;
-        const inner = h % 3 === 0 ? 0.58 : 0.65;
-        ctx.beginPath();
-        ctx.moveTo(Math.cos(a) * r * inner, r * 0.04 + Math.sin(a) * r * inner);
-        ctx.lineTo(Math.cos(a) * r * 0.76, r * 0.04 + Math.sin(a) * r * 0.76);
-        ctx.strokeStyle = h % 3 === 0 ? 'rgba(245, 208, 108, 0.52)' : 'rgba(245, 208, 108, 0.3)';
-        ctx.stroke();
-      }
-      // Ornate clock hands
-      ctx.strokeStyle = 'rgba(245, 208, 108, 0.38)';
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(0, r * 0.04);
-      ctx.lineTo(0, -r * 0.44);
-      ctx.moveTo(0, r * 0.04);
-      ctx.lineTo(r * 0.34, r * 0.2);
-      ctx.stroke();
-
-      // White pleated maid collar at bottom
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-      ctx.beginPath();
-      ctx.moveTo(-r * 0.44, r * 0.66);
-      ctx.lineTo(0, r * 0.84);
-      ctx.lineTo(r * 0.44, r * 0.66);
-      ctx.lineTo(r * 0.36, r * 1.02);
-      ctx.lineTo(-r * 0.36, r * 1.02);
-      ctx.closePath();
+      ctx.ellipse(0, -r * 0.86, r * 0.3, r * 0.11, 0, 0, TAU);
       ctx.fill();
-      ctx.restore();
       break;
     }
 
     case 6: {
-      // Youmu: dark Hakugyokurou teal vest + crisp white V-collar & black ribbon tie
-      ctx.fillStyle = 'rgba(13, 66, 54, 0.68)';
-      ctx.beginPath();
-      ctx.arc(0, r * 1.0, r * 0.68, Math.PI * 1.08, Math.PI * 1.92);
-      ctx.fill();
+      // 雪梨: delicate warm snow-pear blush & tiny caramel speckles
+      const blush = ctx.createRadialGradient(r * 0.56, r * 0.34, 0, r * 0.56, r * 0.34, r * 0.55);
+      blush.addColorStop(0, 'rgba(255, 200, 150, 0.32)');
+      blush.addColorStop(1, 'rgba(255, 200, 150, 0)');
+      ctx.fillStyle = blush;
+      ctx.fillRect(-r, -r, r * 2, r * 2);
 
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = Math.max(1.8, r * 0.055);
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(-r * 0.36, r * 0.56);
-      ctx.lineTo(0, r * 0.82);
-      ctx.lineTo(r * 0.36, r * 0.56);
-      ctx.stroke();
-
-      // Subtle sakura petal accent
-      ctx.fillStyle = 'rgba(255, 196, 220, 0.72)';
-      ctx.beginPath();
-      ctx.ellipse(-r * 0.52, r * 0.48, r * 0.09, r * 0.05, -0.5, 0, TAU);
-      ctx.fill();
+      ctx.fillStyle = 'rgba(156, 124, 58, 0.24)';
+      const specks: Array<[number, number]> = [
+        [-0.78, -0.2], [-0.76, 0.36], [-0.48, 0.74],
+        [0.78, -0.24], [0.8, 0.28], [0.52, 0.72],
+        [-0.62, -0.58], [0.62, -0.58], [0.18, 0.84], [-0.22, 0.82],
+      ];
+      for (const [sx, sy] of specks) {
+        ctx.beginPath();
+        ctx.arc(sx * r, sy * r, Math.max(0.8, r * 0.022), 0, TAU);
+        ctx.fill();
+      }
       break;
     }
 
     case 7: {
-      // Marisa: starry twilight robe + glowing Mini-Hakkero octagon star badge!
-      const stars = [
-        { x: -0.56, y: 0.42, s: 0.1 },
-        { x: -0.44, y: 0.66, s: 0.07 },
-        { x: 0.58, y: 0.22, s: 0.08 },
-      ];
-      ctx.fillStyle = '#ffe169';
-      for (const st of stars) {
-        drawStarPath(ctx, r * st.x, r * st.y, 4, r * st.s, r * st.s * 0.36);
-        ctx.fill();
-      }
+      // 水蜜桃: velvety rose-blush peach cheek gradient + soft top peach cleft!
+      const topBlush = ctx.createRadialGradient(0, -r * 0.55, r * 0.05, 0, -r * 0.35, r * 0.95);
+      topBlush.addColorStop(0, 'rgba(255, 118, 156, 0.36)');
+      topBlush.addColorStop(0.6, 'rgba(255, 198, 212, 0.12)');
+      topBlush.addColorStop(1, 'rgba(255, 240, 224, 0.18)');
+      ctx.fillStyle = topBlush;
+      ctx.fillRect(-r, -r, r * 2, r * 2);
 
-      // Glowing Mini-Hakkero octagon emblem at lower right
-      const hx = r * 0.46;
-      const hy = r * 0.52;
-      const hr = r * 0.21;
-      ctx.save();
-      ctx.translate(hx, hy);
-      // Warm Hakkero radial glow
-      const hGlow = ctx.createRadialGradient(0, 0, hr * 0.1, 0, 0, hr * 1.6);
-      hGlow.addColorStop(0, 'rgba(255, 228, 107, 0.75)');
-      hGlow.addColorStop(1, 'rgba(255, 228, 107, 0)');
-      ctx.fillStyle = hGlow;
+      // Soft peach vertical cleft curve at top & bottom
+      ctx.strokeStyle = 'rgba(176, 72, 106, 0.32)';
+      ctx.lineWidth = Math.max(1.2, r * 0.028);
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.arc(0, 0, hr * 1.6, 0, TAU);
-      ctx.fill();
-
-      // Octagon frame
-      ctx.beginPath();
-      for (let i = 0; i < 8; i++) {
-        const a = (TAU * i) / 8 + Math.PI / 8;
-        const px = Math.cos(a) * hr;
-        const py = Math.sin(a) * hr;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      ctx.fillStyle = '#2d2352';
-      ctx.fill();
-      ctx.strokeStyle = '#ffe169';
-      ctx.lineWidth = Math.max(1.2, r * 0.025);
+      ctx.moveTo(0, -r * 0.98);
+      ctx.quadraticCurveTo(r * 0.05, -r * 0.72, 0, -r * 0.52);
       ctx.stroke();
-
-      // Glowing 5-point Hakkero core star
-      ctx.fillStyle = '#fff5b8';
-      drawStarPath(ctx, 0, 0, 5, hr * 0.66, hr * 0.3);
-      ctx.fill();
-      ctx.restore();
+      ctx.beginPath();
+      ctx.moveTo(0, r * 0.72);
+      ctx.quadraticCurveTo(-r * 0.04, r * 0.86, 0, r * 0.98);
+      ctx.stroke();
       break;
     }
 
     case 8: {
-      // Reimu: crisp white miko collar sash + yellow tie + detailed Yin-Yang orb badge
-      ctx.fillStyle = 'rgba(255, 248, 242, 0.94)';
-      ctx.beginPath();
-      ctx.arc(0, r * 1.06, r * 0.72, Math.PI * 1.08, Math.PI * 1.92);
-      ctx.fill();
+      // 菠萝: stitched-diamond quilted golden plush pineapple pattern!
+      ctx.save();
+      ctx.strokeStyle = 'rgba(138, 86, 12, 0.32)';
+      ctx.lineWidth = Math.max(1.1, r * 0.02);
+      ctx.setLineDash([r * 0.08, r * 0.05]);
+      const step = r * 0.34;
+      for (let d = -r * 2; d <= r * 2; d += step) {
+        ctx.beginPath();
+        ctx.moveTo(d, -r * 1.1);
+        ctx.lineTo(d + r * 1.5, r * 1.1);
+        ctx.stroke();
 
-      // Golden shrine bow tie at center collar
-      drawRibbonBow(ctx, 0, r * 0.68, r * 0.17, '#f2c14e', '#a3162a');
+        ctx.beginPath();
+        ctx.moveTo(d, -r * 1.1);
+        ctx.lineTo(d - r * 1.5, r * 1.1);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
 
-      // Detailed Hakurei Yin-Yang orb on lower-right
-      drawYinYangBadge(ctx, r * 0.52, r * 0.44, r * 0.19);
+      // Tiny stitched diamond center pips along outer pineapple peel
+      ctx.fillStyle = 'rgba(150, 92, 14, 0.28)';
+      const pips: Array<[number, number]> = [
+        [-0.78, -0.22], [-0.8, 0.24], [-0.56, 0.66],
+        [0.78, -0.22], [0.8, 0.24], [0.56, 0.66],
+        [-0.64, -0.58], [0.64, -0.58], [0, 0.82],
+      ];
+      for (const [px, py] of pips) {
+        ctx.beginPath();
+        ctx.arc(px * r, py * r, Math.max(1, r * 0.025), 0, TAU);
+        ctx.fill();
+      }
+      ctx.restore();
       break;
     }
 
     case 9: {
-      // Yukari: twin mystic crimson-rimmed Gap (スキマ) portals with eerie-cute golden eyes!
-      drawGapEye(ctx, 0, r * 0.6, r * 0.48, r * 0.22);
-      ctx.save();
-      ctx.translate(-r * 0.62, r * 0.24);
-      ctx.rotate(-0.55);
-      drawGapEye(ctx, 0, 0, r * 0.24, r * 0.12);
-      ctx.restore();
-      ctx.save();
-      ctx.translate(r * 0.62, r * 0.24);
-      ctx.rotate(0.55);
-      drawGapEye(ctx, 0, 0, r * 0.24, r * 0.12);
-      ctx.restore();
+      // 红富士大苹果 · 博丽灵梦: iconic 苹果乐 apple cleft dimple + warm plush sheen + shrine collar accent!
+      ctx.fillStyle = 'rgba(115, 16, 22, 0.32)';
+      ctx.beginPath();
+      ctx.ellipse(0, -r * 0.86, r * 0.32, r * 0.12, 0, 0, TAU);
+      ctx.fill();
+
+      // Subtle warm crimson Fuji apple vertical stripes along edges
+      ctx.strokeStyle = 'rgba(255, 186, 158, 0.16)';
+      ctx.lineWidth = Math.max(1.5, r * 0.045);
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.arc(side * r * 0.22, 0, r * 0.88, side < 0 ? 0.72 * Math.PI : -0.28 * Math.PI, side < 0 ? 1.28 * Math.PI : 0.28 * Math.PI);
+        ctx.stroke();
+      }
+
+      // Tiny white shrine collar bow accent sewn at very bottom of the apple
+      ctx.fillStyle = 'rgba(255, 248, 240, 0.85)';
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.22, r * 0.98);
+      ctx.quadraticCurveTo(0, r * 0.76, r * 0.22, r * 0.98);
+      ctx.closePath();
+      ctx.fill();
       break;
     }
 
     case 10: {
-      // Ibuki Suika: lush striped watermelon skin with double-tone wavy dark-jade stripes!
+      // 大西瓜 · 伊吹萃香: iconic wavy dark-jade matte plush watermelon stripes!
       ctx.save();
-      const cols = [-0.66, -0.24, 0.24, 0.66];
-      // Outer softer jade halo stripe
-      ctx.strokeStyle = 'rgba(13, 94, 48, 0.55)';
-      ctx.lineWidth = Math.max(3.5, r * 0.185);
       ctx.lineCap = 'round';
-      for (const cx of cols) {
-        traceWatermelonStripe(ctx, cx * r, r);
+      const stripeXs = [-0.78, -0.44, 0, 0.44, 0.78];
+      for (const sx of stripeXs) {
+        const x0 = r * sx;
+        ctx.strokeStyle = 'rgba(14, 72, 36, 0.62)';
+        ctx.lineWidth = r * 0.16;
+        traceWatermelonStripe(ctx, x0, r);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(24, 108, 54, 0.38)';
+        ctx.lineWidth = r * 0.065;
+        traceWatermelonStripe(ctx, x0, r);
         ctx.stroke();
       }
-      // Crisp dark-forest inner jagged stripe
-      ctx.strokeStyle = 'rgba(8, 62, 32, 0.82)';
-      ctx.lineWidth = Math.max(2.2, r * 0.115);
-      for (const cx of cols) {
-        traceWatermelonStripe(ctx, cx * r, r);
-        ctx.stroke();
-      }
-
-      // Festive golden sake aura sparkles & warm glow near bottom
-      const sakeGlow = ctx.createRadialGradient(0, r * 0.55, r * 0.05, 0, r * 0.55, r * 0.65);
-      sakeGlow.addColorStop(0, 'rgba(255, 226, 112, 0.28)');
-      sakeGlow.addColorStop(1, 'rgba(255, 226, 112, 0)');
-      ctx.fillStyle = sakeGlow;
-      ctx.fillRect(-r, 0, r * 2, r);
-
-      ctx.fillStyle = 'rgba(255, 236, 138, 0.72)';
-      drawStarPath(ctx, -r * 0.66, r * 0.26, 4, r * 0.1, r * 0.04);
-      ctx.fill();
-      drawStarPath(ctx, r * 0.68, r * 0.22, 4, r * 0.11, r * 0.045);
-      ctx.fill();
       ctx.restore();
       break;
     }
@@ -965,659 +964,960 @@ function drawInnerMotifs(ctx: CanvasRenderingContext2D, r: number, tier: number)
 }
 
 /**
- * Draws crisp cel-shaded anime hair bangs, fringe silhouettes, side locks, and an angel-ring highlight!
+ * Draws the recessed creamy-white plush face cutout, authentic Fumo embroidered face,
+ * and layered character hair bangs resting right over the top of the face window (苹果乐 style!).
  */
-function drawAnimeHairBangs(ctx: CanvasRenderingContext2D, r: number, tier: number): void {
-  const def = ORB_TIERS[tier];
-  ctx.save();
+function drawFaceCutoutAndFumo(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  def: OrbTierDef,
+  faceState: OrbFaceState
+): void {
+  const tier = def.tier;
+  const faceY = r * 0.09;
+  const faceRx = r * (tier <= 1 ? 0.67 : 0.62);
+  const faceRy = r * (tier <= 1 ? 0.58 : 0.53);
 
-  const hairGrad = ctx.createLinearGradient(0, -r, 0, -r * 0.1);
-  hairGrad.addColorStop(0, def.hair);
-  hairGrad.addColorStop(0.75, def.hair);
-  hairGrad.addColorStop(1, def.hairShadow);
+  // 1. Recessed plush face cutout base (creamy-white minky)
+  const faceGrad = ctx.createRadialGradient(0, faceY - faceRy * 0.25, 0, 0, faceY + faceRy * 0.1, faceRx * 1.15);
+  faceGrad.addColorStop(0, def.faceCream);
+  faceGrad.addColorStop(0.75, '#faefe4');
+  faceGrad.addColorStop(1, '#ecd9ca');
 
-  // Soft cast shadow directly beneath bangs onto forehead
-  ctx.save();
-  ctx.translate(0, r * 0.045);
-  traceBangsPath(ctx, r, tier);
-  ctx.fillStyle = 'rgba(22, 10, 38, 0.18)';
+  ctx.beginPath();
+  ctx.ellipse(0, faceY, faceRx, faceRy, 0, 0, TAU);
+  ctx.fillStyle = faceGrad;
   ctx.fill();
-  ctx.restore();
 
-  // Main hair bangs silhouette
-  traceBangsPath(ctx, r, tier);
-  ctx.fillStyle = hairGrad;
-  ctx.fill();
-
-  // Crisp cel-shaded hair outline
-  ctx.strokeStyle = def.ink;
-  ctx.lineWidth = Math.max(0.85, Math.min(2.1, r * 0.024));
-  ctx.lineJoin = 'round';
-  ctx.stroke();
-
-  // Anime hair "angel ring" glossy sheen arc across bangs
+  // 2. Clip inside face cutout to draw recessed inner rim shadow, embroidered Fumo face, and layered bangs
   ctx.save();
   ctx.beginPath();
-  ctx.arc(0, -r * 0.34, r * 0.62, Math.PI * 1.18, Math.PI * 1.82);
-  ctx.strokeStyle =
-    tier === 8 || tier === 1 || tier === 4
-      ? 'rgba(255, 255, 255, 0.42)'
-      : 'rgba(255, 255, 255, 0.55)';
-  ctx.lineWidth = Math.max(1.2, r * 0.055);
-  ctx.lineCap = 'round';
-  ctx.setLineDash([r * 0.24, r * 0.12, r * 0.14, r * 0.12]);
+  ctx.ellipse(0, faceY, faceRx, faceRy, 0, 0, TAU);
+  ctx.clip();
+
+  // Soft recessed seam inner shadow along upper/side hood edge
+  ctx.save();
+  ctx.strokeStyle = 'rgba(84, 40, 34, 0.18)';
+  ctx.lineWidth = Math.max(1.4, r * 0.055);
+  ctx.beginPath();
+  ctx.ellipse(0, faceY + r * 0.025, faceRx, faceRy, 0, 0, TAU);
   ctx.stroke();
   ctx.restore();
 
-  ctx.restore();
-}
+  // 3. Authentic Fumo embroidered eyes, rosy blush puffs, and minimalist mouth
+  drawFumoBlush(ctx, r, def.blush, faceState === 'panic');
+  drawFumoEyes(ctx, r, def.eyeTop, def.eyeBottom, def.expression, faceState);
+  drawFumoMouth(ctx, r, def.expression, faceState);
 
-function traceBangsPath(ctx: CanvasRenderingContext2D, r: number, tier: number): void {
+  // 4. Layered plush felt character hair bangs resting over top of face cutout!
+  drawPlushHairBangs(ctx, r, def, faceY, faceRx, faceRy);
+
+  ctx.restore(); // end face cutout clip
+
+  // Delicate stitched border around the plush face cutout window
   ctx.beginPath();
-  ctx.moveTo(-r * 1.05, -r * 1.05);
-  ctx.lineTo(r * 1.05, -r * 1.05);
+  ctx.ellipse(0, faceY, faceRx, faceRy, 0, 0, TAU);
+  ctx.strokeStyle = tier === 0 ? 'rgba(155, 134, 118, 0.38)' : 'rgba(64, 28, 24, 0.28)';
+  ctx.lineWidth = Math.max(0.85, Math.min(1.8, r * 0.028));
+  ctx.stroke();
 
-  if (tier === 10) {
-    // Suika: energetic spiky ginger bangs peeking above watermelon face
-    ctx.lineTo(r * 0.92, -r * 0.28);
-    ctx.quadraticCurveTo(r * 0.68, -r * 0.24, r * 0.54, -r * 0.44);
-    ctx.lineTo(r * 0.38, -r * 0.22);
-    ctx.lineTo(r * 0.18, -r * 0.42);
-    ctx.lineTo(0, -r * 0.19);
-    ctx.lineTo(-r * 0.18, -r * 0.42);
-    ctx.lineTo(-r * 0.38, -r * 0.22);
-    ctx.lineTo(-r * 0.54, -r * 0.44);
-    ctx.quadraticCurveTo(-r * 0.68, -r * 0.24, -r * 0.92, -r * 0.28);
-  } else if (tier === 7 || tier === 9) {
-    // Marisa & Yukari: sweeping parted golden anime bangs + lush side cheek locks
-    ctx.lineTo(r * 0.98, r * 0.18);
-    ctx.quadraticCurveTo(r * 0.78, r * 0.04, r * 0.68, -r * 0.26);
-    ctx.quadraticCurveTo(r * 0.48, -r * 0.18, r * 0.32, -r * 0.38);
-    ctx.quadraticCurveTo(r * 0.14, -r * 0.2, 0, -r * 0.46);
-    ctx.quadraticCurveTo(-r * 0.14, -r * 0.2, -r * 0.32, -r * 0.38);
-    ctx.quadraticCurveTo(-r * 0.48, -r * 0.18, -r * 0.68, -r * 0.26);
-    ctx.quadraticCurveTo(-r * 0.78, r * 0.04, -r * 0.98, r * 0.18);
-  } else if (tier === 8 || tier === 5) {
-    // Reimu & Sakuya: neat Hime-cut / layered maid bangs with crisp center lock & long cheek locks
-    ctx.lineTo(r * 0.96, r * 0.24);
-    ctx.quadraticCurveTo(r * 0.76, r * 0.08, r * 0.68, -r * 0.28);
-    ctx.lineTo(r * 0.46, -r * 0.22);
-    ctx.lineTo(r * 0.28, -r * 0.38);
-    ctx.lineTo(r * 0.08, -r * 0.2);
-    ctx.lineTo(0, -r * 0.34);
-    ctx.lineTo(-r * 0.08, -r * 0.2);
-    ctx.lineTo(-r * 0.28, -r * 0.38);
-    ctx.lineTo(-r * 0.46, -r * 0.22);
-    ctx.lineTo(-r * 0.68, -r * 0.28);
-    ctx.quadraticCurveTo(-r * 0.76, r * 0.08, -r * 0.96, r * 0.24);
-  } else {
-    // Cirno, Rumia, Flandre, Remilia, Youmu: lively bob-cut anime fringe
-    ctx.lineTo(r * 0.96, r * 0.02);
-    ctx.quadraticCurveTo(r * 0.74, -r * 0.08, r * 0.62, -r * 0.32);
-    ctx.lineTo(r * 0.42, -r * 0.22);
-    ctx.lineTo(r * 0.22, -r * 0.38);
-    ctx.lineTo(0, -r * 0.19);
-    ctx.lineTo(-r * 0.22, -r * 0.38);
-    ctx.lineTo(-r * 0.42, -r * 0.22);
-    ctx.lineTo(-r * 0.62, -r * 0.32);
-    ctx.quadraticCurveTo(-r * 0.74, -r * 0.08, -r * 0.96, r * 0.02);
-  }
-  ctx.closePath();
-}
-
-function drawChibiFace(ctx: CanvasRenderingContext2D, r: number, tier: number): void {
-  const def = ORB_TIERS[tier];
-  const eyeX = r * (tier === 0 ? 0.26 : 0.3);
-  const eyeY = r * (tier === 0 ? 0.0 : tier === 9 ? 0.04 : 0.05);
-  const eyeR = Math.max(1.6, r * (tier === 0 ? 0.115 : 0.135));
-
-  // Soft rosy radial blush cheeks
-  for (const side of [-1, 1]) {
-    const bx = side * eyeX * 1.44;
-    const by = eyeY + r * 0.175;
-    const br = r * 0.16;
-    const blush = ctx.createRadialGradient(bx, by, 0, bx, by, br);
-    blush.addColorStop(0, tier === 1 ? 'rgba(255, 118, 168, 0.68)' : 'rgba(255, 112, 148, 0.74)');
-    blush.addColorStop(1, 'rgba(255, 112, 148, 0)');
-    ctx.fillStyle = blush;
-    ctx.beginPath();
-    ctx.ellipse(bx, by, br, br * 0.62, 0, 0, TAU);
-    ctx.fill();
-
-    // Cute tiny anime blush lines on larger orbs
-    if (r >= 42) {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.48)';
-      ctx.lineWidth = Math.max(0.9, r * 0.018);
-      ctx.lineCap = 'round';
-      for (const off of [-0.04, 0.03]) {
-        ctx.beginPath();
-        ctx.moveTo(bx + r * off - r * 0.02, by + r * 0.025);
-        ctx.lineTo(bx + r * off + r * 0.02, by - r * 0.025);
-        ctx.stroke();
-      }
+  // Front hair charms that sit right on top of the face/bangs border (Reimu white tubes, Suika brow beads)
+  if (tier === 9) {
+    // Reimu's iconic twin white hair tubes framing her plush bangs!
+    ctx.fillStyle = '#fffdf8';
+    ctx.strokeStyle = '#c4273b';
+    ctx.lineWidth = Math.max(1.0, r * 0.022);
+    for (const side of [-1, 1]) {
+      roundRectPath(ctx, side * r * 0.56 - r * 0.06, -r * 0.05, r * 0.12, r * 0.28, r * 0.04);
+      ctx.fill();
+      ctx.stroke();
     }
+  } else if (tier === 10) {
+    // Suika's signature geometric brow charm chain (red circle, gold triangle, blue square)
+    const cy = -r * 0.25;
+    ctx.strokeStyle = '#ffe27a';
+    ctx.lineWidth = Math.max(1.1, r * 0.022);
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.34, cy - r * 0.02);
+    ctx.quadraticCurveTo(0, cy + r * 0.07, r * 0.34, cy - r * 0.02);
+    ctx.stroke();
+
+    // Red circle
+    ctx.fillStyle = '#f24b64';
+    ctx.strokeStyle = '#521822';
+    ctx.lineWidth = Math.max(0.9, r * 0.018);
+    ctx.beginPath();
+    ctx.arc(-r * 0.2, cy + r * 0.02, r * 0.062, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+
+    // Gold triangle
+    ctx.fillStyle = '#ffe066';
+    ctx.beginPath();
+    ctx.moveTo(0, cy - r * 0.045);
+    ctx.lineTo(r * 0.068, cy + r * 0.075);
+    ctx.lineTo(-r * 0.068, cy + r * 0.075);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Blue square
+    ctx.fillStyle = '#57c9ff';
+    const sq = r * 0.11;
+    ctx.fillRect(r * 0.145, cy - r * 0.035, sq, sq);
+    ctx.strokeRect(r * 0.145, cy - r * 0.035, sq, sq);
+  }
+}
+
+function drawFumoBlush(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  blushColor: string,
+  panicked: boolean
+): void {
+  const bx = r * 0.35;
+  const by = r * 0.27;
+  const brx = r * (panicked ? 0.14 : 0.115);
+  const bry = r * (panicked ? 0.085 : 0.068);
+  for (const side of [-1, 1]) {
+    const g = ctx.createRadialGradient(side * bx, by, 0, side * bx, by, brx * 1.2);
+    g.addColorStop(0, panicked ? 'rgba(255, 118, 146, 0.72)' : hexToRgba(blushColor, 0.58));
+    g.addColorStop(1, 'rgba(255, 150, 175, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(side * bx, by, brx * 1.15, bry * 1.25, 0, 0, TAU);
+    ctx.fill();
+  }
+}
+
+function drawFumoEyes(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  eyeTop: string,
+  eyeBottom: string,
+  expression: FumoExpression,
+  faceState: OrbFaceState
+): void {
+  const ex = r * 0.245;
+  const ey = r * 0.135;
+  const erx = r * 0.118;
+  const ery = r * 0.138;
+  const embW = Math.max(1.2, r * 0.044);
+
+  // Panicked "＞  ＜" squeezed embroidered eyes!
+  if (faceState === 'panic') {
+    ctx.strokeStyle = EMBROIDERY_INK;
+    ctx.lineWidth = Math.max(1.4, r * 0.052);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Left eye: ＞
+    ctx.beginPath();
+    ctx.moveTo(-ex - erx * 0.8, ey - ery * 0.65);
+    ctx.lineTo(-ex + erx * 0.75, ey);
+    ctx.lineTo(-ex - erx * 0.8, ey + ery * 0.65);
+    ctx.stroke();
+
+    // Right eye: ＜
+    ctx.beginPath();
+    ctx.moveTo(ex + erx * 0.8, ey - ery * 0.65);
+    ctx.lineTo(ex - erx * 0.75, ey);
+    ctx.lineTo(ex + erx * 0.8, ey + ery * 0.65);
+    ctx.stroke();
+    return;
   }
 
-  // Expressive anime eyes
+  // Blinking closed embroidered lashes!
+  if (faceState === 'blink') {
+    ctx.strokeStyle = EMBROIDERY_INK;
+    ctx.lineWidth = Math.max(1.3, r * 0.048);
+    ctx.lineCap = 'round';
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      if (expression === 'deadpan') {
+        ctx.moveTo(side * ex - erx * 0.88, ey + ery * 0.08);
+        ctx.lineTo(side * ex + erx * 0.88, ey + ery * 0.08);
+      } else {
+        ctx.arc(side * ex, ey - ery * 0.15, erx * 0.9, 0.18 * Math.PI, 0.82 * Math.PI);
+      }
+      ctx.stroke();
+    }
+    return;
+  }
+
+  // Special adorable minimalist dot eyes for Tier 0 Kedama (·ω·)
+  if (expression === 'kedama') {
+    const dotR = Math.max(1.5, r * 0.105);
+    for (const side of [-1, 1]) {
+      ctx.fillStyle = EMBROIDERY_INK;
+      ctx.beginPath();
+      ctx.arc(side * ex * 0.94, ey, dotR, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(side * ex * 0.94 - dotR * 0.32, ey - dotR * 0.34, dotR * 0.34, 0, TAU);
+      ctx.fill();
+    }
+    return;
+  }
+
+  // Authentic embroidered Fumo rounded-oval eyes!
   for (const side of [-1, 1]) {
-    const ex = side * eyeX;
-    if (tier === 7 && side === 1) {
-      // Marisa's signature cheerful wink!
-      ctx.strokeStyle = '#ffe46b';
-      ctx.lineWidth = Math.max(1.8, r * 0.062);
+    // Marisa right-eye wink (`ᗜ▽<`)
+    if (expression === 'wink' && side === 1) {
+      ctx.strokeStyle = EMBROIDERY_INK;
+      ctx.lineWidth = Math.max(1.5, r * 0.052);
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.beginPath();
-      ctx.moveTo(ex - eyeR * 0.9, eyeY - eyeR * 0.45);
-      ctx.lineTo(ex + eyeR * 0.68, eyeY);
-      ctx.lineTo(ex - eyeR * 0.9, eyeY + eyeR * 0.52);
+      ctx.moveTo(ex + erx * 0.82, ey - ery * 0.56);
+      ctx.lineTo(ex - erx * 0.72, ey + ery * 0.04);
+      ctx.lineTo(ex + erx * 0.82, ey + ery * 0.62);
       ctx.stroke();
       continue;
     }
 
-    const ry = eyeR * (tier === 9 ? 0.78 : tier === 4 ? 0.9 : 1.08);
-    const rx = eyeR * 0.9;
+    const cx = side * ex;
 
-    // Subtle white sclera backing on medium/large orbs for jewel-like anime contrast
-    if (r >= 24 && tier !== 0) {
-      ctx.fillStyle = 'rgba(255, 252, 255, 0.92)';
-      ctx.beginPath();
-      ctx.ellipse(ex, eyeY + ry * 0.05, rx * 1.12, ry * 1.04, 0, 0, TAU);
-      ctx.fill();
-    }
+    // 1. Clean soft iris satin-stitch gradient inside rounded Fumo oval
+    const irisGrad = ctx.createLinearGradient(cx, ey - ery, cx, ey + ery);
+    irisGrad.addColorStop(0, eyeTop);
+    irisGrad.addColorStop(0.62, eyeBottom);
+    irisGrad.addColorStop(1, '#fff5e6');
 
-    // Rich vertical iris gradient
-    const irisGrad = ctx.createLinearGradient(ex, eyeY - ry, ex, eyeY + ry);
-    irisGrad.addColorStop(0, def.ink);
-    irisGrad.addColorStop(0.45, def.eye);
-    irisGrad.addColorStop(1, def.highlight);
-    ctx.fillStyle = irisGrad;
     ctx.beginPath();
-    ctx.ellipse(ex, eyeY, rx, ry, 0, 0, TAU);
+    ctx.ellipse(cx, ey, erx, ery, 0, 0, TAU);
+    ctx.fillStyle = irisGrad;
     ctx.fill();
 
-    // Deep pupil core
-    if (r >= 24) {
-      ctx.fillStyle = def.ink;
+    // Soft deeper upper iris shadow (gives iconic Fumo plush depth)
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(cx, ey, erx, ery, 0, 0, TAU);
+    ctx.clip();
+
+    ctx.fillStyle = 'rgba(40, 16, 16, 0.28)';
+    ctx.beginPath();
+    ctx.ellipse(cx, ey - ery * 0.52, erx * 1.15, ery * 0.55, 0, 0, TAU);
+    ctx.fill();
+
+    // Bright embroidered upper catchlight + tiny lower sparkle
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.ellipse(cx - erx * 0.28, ey - ery * 0.28, erx * 0.36, ery * 0.28, -0.3, 0, TAU);
+    ctx.fill();
+
+    if (r >= 28) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
       ctx.beginPath();
-      ctx.ellipse(ex, eyeY - ry * 0.04, rx * 0.46, ry * 0.48, 0, 0, TAU);
+      ctx.arc(cx + erx * 0.28, ey + ery * 0.34, Math.max(0.7, erx * 0.16), 0, TAU);
       ctx.fill();
     }
+    ctx.restore();
 
-    // Luminous lower iris crescent bounce
-    if (r >= 30) {
-      ctx.beginPath();
-      ctx.arc(ex, eyeY + ry * 0.1, rx * 0.62, 0.15 * Math.PI, 0.85 * Math.PI);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.58)';
-      ctx.lineWidth = Math.max(1, r * 0.025);
-      ctx.lineCap = 'round';
-      ctx.stroke();
-    }
+    // 2. Thick dark-brown/charcoal Fumo embroidery outline around eye
+    ctx.beginPath();
+    ctx.ellipse(cx, ey, erx, ery, 0, 0, TAU);
+    ctx.strokeStyle = EMBROIDERY_INK;
+    ctx.lineWidth = embW;
+    ctx.stroke();
 
-    // Thick curved anime upper eyelash arch
-    ctx.strokeStyle = tier === 7 ? '#ffe885' : def.ink;
-    ctx.lineWidth = Math.max(1.3, r * 0.042);
+    // Thick iconic flat-curved upper Fumo lash arc (gives the signature ᗜ shape!)
+    ctx.strokeStyle = EMBROIDERY_INK;
+    ctx.lineWidth = Math.max(1.4, embW * 1.45);
     ctx.lineCap = 'round';
     ctx.beginPath();
-    if (tier === 9 || tier === 4) {
-      // Half-lidded regal lash
-      ctx.moveTo(ex - rx * 1.18, eyeY - ry * 0.54);
-      ctx.quadraticCurveTo(ex, eyeY - ry * 0.72, ex + rx * 1.18, eyeY - ry * 0.38);
+    if (expression === 'deadpan' || expression === 'smug') {
+      ctx.moveTo(cx - erx * 1.04, ey - ery * 0.72);
+      ctx.quadraticCurveTo(cx, ey - ery * 1.06, cx + erx * 1.04, ey - ery * 0.72);
+    } else if (expression === 'proud') {
+      ctx.moveTo(cx - side * erx * 1.02, ey - ery * 0.62);
+      ctx.quadraticCurveTo(cx, ey - ery * 1.04, cx + side * erx * 1.05, ey - ery * 0.88);
     } else {
-      ctx.arc(ex, eyeY + ry * 0.05, rx * 1.12, Math.PI * 1.12, Math.PI * 1.88);
+      ctx.arc(cx, ey, erx * 1.02, Math.PI * 1.12, Math.PI * 1.88);
     }
     ctx.stroke();
 
-    // Cirno's confident cheeky eyebrows!
-    if (tier === 1) {
-      ctx.strokeStyle = '#15366e';
-      ctx.lineWidth = Math.max(1.1, r * 0.05);
+    // Delicate embroidered eyebrow peeking above eye (for medium/large tiers)
+    if (r >= 26) {
+      ctx.strokeStyle = EMBROIDERY_INK;
+      ctx.lineWidth = Math.max(0.9, r * 0.028);
       ctx.beginPath();
-      ctx.moveTo(ex - side * rx * 0.9, eyeY - ry * 1.05);
-      ctx.lineTo(ex + side * rx * 0.85, eyeY - ry * 1.38);
+      const by = ey - ery * 1.38;
+      if (expression === 'proud') {
+        ctx.moveTo(cx - side * erx * 0.62, by + r * 0.025);
+        ctx.lineTo(cx + side * erx * 0.68, by - r * 0.025);
+      } else if (expression === 'smug') {
+        ctx.moveTo(cx - erx * 0.6, by + (side < 0 ? 0.02 * r : -0.015 * r));
+        ctx.quadraticCurveTo(cx, by - r * 0.035, cx + erx * 0.6, by + (side < 0 ? -0.015 * r : 0.02 * r));
+      } else {
+        ctx.moveTo(cx - erx * 0.55, by);
+        ctx.quadraticCurveTo(cx, by - r * 0.02, cx + erx * 0.55, by);
+      }
       ctx.stroke();
     }
-
-    // Main bright white upper-left anime catchlight
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.ellipse(
-      ex - rx * 0.3,
-      eyeY - ry * 0.3,
-      Math.max(0.9, rx * 0.36),
-      Math.max(0.8, ry * 0.32),
-      -0.3,
-      0,
-      TAU
-    );
-    ctx.fill();
-
-    // Secondary lower-right jewel sparkle
-    if (r >= 24) {
-      ctx.fillStyle = tier === 3 || tier === 10 ? '#ffe680' : 'rgba(255, 255, 255, 0.86)';
-      ctx.beginPath();
-      ctx.arc(ex + rx * 0.3, eyeY + ry * 0.3, Math.max(0.7, rx * 0.18), 0, TAU);
-      ctx.fill();
-    }
   }
+}
 
-  // Expressive Mouth
-  const my = eyeY + r * 0.22;
-  const mouthStroke = tier === 7 || tier === 2 ? '#ffe680' : def.ink;
-  ctx.strokeStyle = mouthStroke;
-  ctx.lineWidth = Math.max(1.3, r * 0.044);
+function drawFumoMouth(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  expression: FumoExpression,
+  faceState: OrbFaceState
+): void {
+  const my = r * 0.34;
+  const strokeW = Math.max(1.15, r * 0.04);
+  ctx.strokeStyle = EMBROIDERY_INK;
+  ctx.lineWidth = strokeW;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  if (tier === 10) {
-    // Giant triumphant happy open watermelon oni grin!
-    ctx.fillStyle = '#ff5e78';
+  // Panicked squiggly `﹏` mouth!
+  if (faceState === 'panic') {
+    const mw = r * 0.16;
     ctx.beginPath();
-    ctx.moveTo(-r * 0.2, my - r * 0.02);
-    ctx.quadraticCurveTo(0, my + r * 0.27, r * 0.2, my - r * 0.02);
-    ctx.closePath();
-    ctx.fill();
-    // Cute tongue highlight inside grin
-    ctx.fillStyle = '#ff9bb0';
-    ctx.beginPath();
-    ctx.ellipse(0, my + r * 0.11, r * 0.1, r * 0.055, 0, 0, TAU);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(-r * 0.2, my - r * 0.02);
-    ctx.quadraticCurveTo(0, my + r * 0.27, r * 0.2, my - r * 0.02);
-    ctx.closePath();
+    ctx.moveTo(-mw, my + r * 0.01);
+    ctx.quadraticCurveTo(-mw * 0.5, my - r * 0.055, 0, my + r * 0.01);
+    ctx.quadraticCurveTo(mw * 0.5, my + r * 0.065, mw, my + r * 0.01);
     ctx.stroke();
-  } else if (tier === 2 || tier === 3 || tier === 4) {
-    // Mischievous vampire / youkai fang smile
-    ctx.beginPath();
-    ctx.moveTo(-r * 0.16, my);
-    ctx.quadraticCurveTo(0, my + r * 0.15, r * 0.16, my);
-    ctx.stroke();
-    if (r >= 20) {
+    return;
+  }
+
+  switch (expression) {
+    case 'kedama':
+    case 'cat': {
+      // Iconic cute `ω` kitty/mochi mouth (`·ω·` / `ᗜωᗜ`)
+      const mw = r * 0.135;
+      ctx.beginPath();
+      ctx.moveTo(-mw, my - r * 0.01);
+      ctx.quadraticCurveTo(-mw * 0.5, my + r * 0.085, 0, my - r * 0.005);
+      ctx.quadraticCurveTo(mw * 0.5, my + r * 0.085, mw, my - r * 0.01);
+      ctx.stroke();
+      break;
+    }
+
+    case 'smug': {
+      // Cirno cheeky smirk (`ᗜˬᗜ`)
+      const mw = r * 0.12;
+      ctx.beginPath();
+      ctx.moveTo(-mw, my + r * 0.01);
+      ctx.quadraticCurveTo(mw * 0.2, my + r * 0.065, mw * 1.15, my - r * 0.045);
+      ctx.stroke();
+      break;
+    }
+
+    case 'deadpan': {
+      // Iconic minimalist Fumo deadpan stitch (`ᗜ_ᗜ`)
+      const mw = r * 0.115;
+      ctx.beginPath();
+      ctx.moveTo(-mw, my + r * 0.015);
+      ctx.quadraticCurveTo(0, my + r * 0.032, mw, my + r * 0.015);
+      ctx.stroke();
+      break;
+    }
+
+    case 'gentle': {
+      // Serene Sakuya Fumo smile (`ᗜ‿ᗜ`)
+      const mw = r * 0.13;
+      ctx.beginPath();
+      ctx.moveTo(-mw, my - r * 0.015);
+      ctx.quadraticCurveTo(0, my + r * 0.085, mw, my - r * 0.015);
+      ctx.stroke();
+      break;
+    }
+
+    case 'proud': {
+      // Proud Remilia vampiric pout-smirk (`ᗜ‸ᗜ`) + tiny white fang!
+      const mw = r * 0.115;
+      ctx.beginPath();
+      ctx.moveTo(-mw, my + r * 0.035);
+      ctx.quadraticCurveTo(0, my - r * 0.035, mw, my + r * 0.035);
+      ctx.stroke();
+
+      // Tiny crisp white vampire fang
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.moveTo(r * 0.045, my + r * 0.045);
-      ctx.lineTo(r * 0.11, my + r * 0.025);
-      ctx.lineTo(r * 0.08, my + r * 0.14);
+      ctx.moveTo(mw * 0.3, my + r * 0.01);
+      ctx.lineTo(mw * 0.65, my + r * 0.018);
+      ctx.lineTo(mw * 0.45, my + r * 0.085);
       ctx.closePath();
       ctx.fill();
+      ctx.strokeStyle = EMBROIDERY_INK;
+      ctx.lineWidth = Math.max(0.7, strokeW * 0.65);
+      ctx.stroke();
+      break;
     }
-  } else if (tier === 7 || tier === 1) {
-    // Exuberant cheerful open grin
-    ctx.fillStyle = '#ff708c';
+
+    case 'fang':
+    case 'wink':
+    case 'tipsy': {
+      // Embroidered open coral-pink plush mouth (`ᗜ▽ᗜ` / `ᗜ▽<`) just like 苹果乐!
+      const mw = r * (expression === 'tipsy' ? 0.155 : 0.13);
+      const mh = r * (expression === 'tipsy' ? 0.15 : 0.125);
+      ctx.beginPath();
+      ctx.moveTo(-mw, my - r * 0.025);
+      ctx.lineTo(mw, my - r * 0.025);
+      ctx.quadraticCurveTo(mw * 0.65, my + mh, 0, my + mh);
+      ctx.quadraticCurveTo(-mw * 0.65, my + mh, -mw, my - r * 0.025);
+      ctx.closePath();
+      ctx.fillStyle = expression === 'tipsy' ? '#ff7084' : '#f26d7d';
+      ctx.fill();
+      ctx.stroke();
+
+      // Tiny warm tongue highlight
+      if (r >= 32) {
+        ctx.fillStyle = '#ffa6b2';
+        ctx.beginPath();
+        ctx.ellipse(0, my + mh * 0.65, mw * 0.48, mh * 0.26, 0, 0, TAU);
+        ctx.fill();
+      }
+
+      // Cute tiny white fang for Flandre
+      if (expression === 'fang') {
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.moveTo(mw * 0.34, my - r * 0.022);
+        ctx.lineTo(mw * 0.72, my - r * 0.022);
+        ctx.lineTo(mw * 0.52, my + mh * 0.42);
+        ctx.closePath();
+        ctx.fill();
+      }
+      break;
+    }
+  }
+}
+
+/**
+ * Draws layered felt/minky character bangs draping over the top of the creamy face cutout,
+ * complete with a gentle plush cast shadow onto the face (exact 苹果乐 plush layering!).
+ */
+function drawPlushHairBangs(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  def: OrbTierDef,
+  faceY: number,
+  faceRx: number,
+  faceRy: number
+): void {
+  const tier = def.tier;
+  const topY = faceY - faceRy * 1.15;
+
+  const traceBangsPath = (): void => {
     ctx.beginPath();
-    ctx.moveTo(-r * 0.16, my - r * 0.01);
-    ctx.quadraticCurveTo(0, my + r * 0.2, r * 0.16, my - r * 0.01);
+    if (tier === 0) {
+      // 毛玉: soft fluffy white cloud-wool top tuft
+      ctx.moveTo(-faceRx * 1.08, topY);
+      ctx.lineTo(faceRx * 1.08, topY);
+      ctx.lineTo(faceRx * 1.04, -r * 0.14);
+      ctx.quadraticCurveTo(r * 0.44, -r * 0.08, r * 0.24, -r * 0.19);
+      ctx.quadraticCurveTo(r * 0.08, -r * 0.08, 0, -r * 0.18);
+      ctx.quadraticCurveTo(-r * 0.08, -r * 0.08, -r * 0.24, -r * 0.19);
+      ctx.quadraticCurveTo(-r * 0.44, -r * 0.08, -faceRx * 1.04, -r * 0.14);
+      ctx.closePath();
+      return;
+    }
+
+    if (tier === 1 || tier === 10) {
+      // 琪露诺 & 伊吹萃香: energetic spiky felt bangs!
+      ctx.moveTo(-faceRx * 1.1, topY);
+      ctx.lineTo(faceRx * 1.1, topY);
+      ctx.lineTo(faceRx * 1.06, r * 0.18);
+      ctx.lineTo(r * 0.52, -r * 0.02);
+      ctx.lineTo(r * 0.44, r * 0.12);
+      ctx.lineTo(r * 0.26, -r * 0.08);
+      ctx.lineTo(r * 0.12, r * 0.03);
+      ctx.lineTo(0, -r * 0.1);
+      ctx.lineTo(-r * 0.12, r * 0.03);
+      ctx.lineTo(-r * 0.26, -r * 0.08);
+      ctx.lineTo(-r * 0.44, r * 0.12);
+      ctx.lineTo(-r * 0.52, -r * 0.02);
+      ctx.lineTo(-faceRx * 1.06, r * 0.18);
+      ctx.closePath();
+      return;
+    }
+
+    if (tier === 9) {
+      // 博丽灵梦: lush layered shrine-maiden bangs + long cheek-framing side locks!
+      ctx.moveTo(-faceRx * 1.1, topY);
+      ctx.lineTo(faceRx * 1.1, topY);
+      ctx.lineTo(faceRx * 1.08, r * 0.32);
+      ctx.quadraticCurveTo(r * 0.54, r * 0.24, r * 0.47, -r * 0.02);
+      ctx.quadraticCurveTo(r * 0.34, -r * 0.09, r * 0.18, -r * 0.04);
+      ctx.quadraticCurveTo(r * 0.08, r * 0.05, 0, -r * 0.05);
+      ctx.quadraticCurveTo(-r * 0.08, r * 0.05, -r * 0.18, -r * 0.04);
+      ctx.quadraticCurveTo(-r * 0.34, -r * 0.09, -r * 0.47, -r * 0.02);
+      ctx.quadraticCurveTo(-r * 0.54, r * 0.24, -faceRx * 1.08, r * 0.32);
+      ctx.closePath();
+      return;
+    }
+
+    if (tier === 8 || tier === 6) {
+      // 魔理沙 & 咲夜: breezy parted plush bangs with sweeping side-locks
+      ctx.moveTo(-faceRx * 1.1, topY);
+      ctx.lineTo(faceRx * 1.1, topY);
+      ctx.lineTo(faceRx * 1.06, r * 0.28);
+      ctx.quadraticCurveTo(r * 0.52, r * 0.16, r * 0.44, -r * 0.04);
+      ctx.quadraticCurveTo(r * 0.22, -r * 0.09, r * 0.04, -r * 0.02);
+      ctx.quadraticCurveTo(-r * 0.02, -r * 0.12, -r * 0.12, -r * 0.02);
+      ctx.quadraticCurveTo(-r * 0.28, -r * 0.09, -r * 0.44, -r * 0.04);
+      ctx.quadraticCurveTo(-r * 0.52, r * 0.16, -faceRx * 1.06, r * 0.28);
+      ctx.closePath();
+      return;
+    }
+
+    // Standard layered Fumo felt bangs (Rumia, Flandre, Chen, Youmu, Remilia)
+    ctx.moveTo(-faceRx * 1.1, topY);
+    ctx.lineTo(faceRx * 1.1, topY);
+    ctx.lineTo(faceRx * 1.05, r * 0.22);
+    ctx.quadraticCurveTo(r * 0.5, r * 0.12, r * 0.44, -r * 0.05);
+    ctx.quadraticCurveTo(r * 0.28, -r * 0.1, r * 0.16, -r * 0.03);
+    ctx.quadraticCurveTo(r * 0.05, r * 0.04, 0, -r * 0.07);
+    ctx.quadraticCurveTo(-r * 0.05, r * 0.04, -r * 0.16, -r * 0.03);
+    ctx.quadraticCurveTo(-r * 0.28, -r * 0.1, -r * 0.44, -r * 0.05);
+    ctx.quadraticCurveTo(-r * 0.5, r * 0.12, -faceRx * 1.05, r * 0.22);
     ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-  } else if (tier === 0) {
-    // Cute ':3' cat smile
+  };
+
+  // 1. Soft plush shadow cast by the felt bangs onto the creamy white face!
+  ctx.save();
+  ctx.translate(0, Math.max(1.2, r * 0.042));
+  traceBangsPath();
+  ctx.fillStyle = 'rgba(84, 46, 38, 0.16)';
+  ctx.fill();
+  ctx.restore();
+
+  // 2. Matte plush felt hair fill
+  const hairGrad = ctx.createLinearGradient(0, topY, 0, r * 0.18);
+  hairGrad.addColorStop(0, def.hairHighlight);
+  hairGrad.addColorStop(0.55, def.hair);
+  hairGrad.addColorStop(1, def.hairShadow);
+
+  traceBangsPath();
+  ctx.fillStyle = hairGrad;
+  ctx.fill();
+
+  // Soft warm stitched hair outline
+  ctx.strokeStyle = def.hairShadow;
+  ctx.lineWidth = Math.max(0.85, Math.min(1.8, r * 0.028));
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  // Subtle matte felt hair parting lines on larger orbs
+  if (r >= 38 && tier >= 1) {
+    ctx.strokeStyle = 'rgba(255, 252, 245, 0.25)';
+    ctx.lineWidth = Math.max(0.9, r * 0.02);
+    ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(-r * 0.15, my);
-    ctx.quadraticCurveTo(-r * 0.075, my + r * 0.11, 0, my);
-    ctx.quadraticCurveTo(r * 0.075, my + r * 0.11, r * 0.15, my);
-    ctx.stroke();
-  } else {
-    // Serene composed Touhou smile
-    ctx.beginPath();
-    ctx.moveTo(-r * 0.13, my);
-    ctx.quadraticCurveTo(0, my + r * 0.12, r * 0.13, my);
+    ctx.arc(0, -r * 0.26, r * 0.34, Math.PI * 1.15, Math.PI * 1.85);
     ctx.stroke();
   }
 }
 
-function drawFrontAccessories(
+/**
+ * Draws each tier's top fruit stem/leaf/calyx cleanly harmonized with miniature Touhou headgear/charm
+ * so every single orb reads as BOTH its fruit AND its Touhou character in 0.1s!
+ */
+function drawTopFruitAndHeadgear(
   ctx: CanvasRenderingContext2D,
   r: number,
   tier: number,
   iconMode: boolean
 ): void {
-  const ext = iconMode ? 0.88 : 1.0;
+  const ext = iconMode ? 0.9 : 1.0;
 
   switch (tier) {
+    case 0: {
+      // 白玉果 · 毛玉: cute tiny green stem & baby sprout leaf
+      drawPlushStemAndLeaf(ctx, 0, -r * 0.9, r * 0.85 * ext, '#5a8f40', '#87d459', '#325921');
+      break;
+    }
+
     case 1: {
-      // Cirno: crisp royal-blue bow on crown
-      drawRibbonBow(ctx, 0, -r * 0.88, r * 0.36, '#1f64db', '#d6f8ff');
+      // 蓝莓 · 琪露诺: blueberry star calyx crown + Cirno's blue ribbon bow!
+      ctx.save();
+      ctx.translate(0, -r * 0.94);
+      ctx.fillStyle = '#2e5da8';
+      ctx.strokeStyle = '#1b386e';
+      ctx.lineWidth = Math.max(0.85, r * 0.04);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.32, r * 0.08);
+      ctx.lineTo(-r * 0.22, -r * 0.15);
+      ctx.lineTo(-r * 0.07, -r * 0.02);
+      ctx.lineTo(0, -r * 0.19);
+      ctx.lineTo(r * 0.07, -r * 0.02);
+      ctx.lineTo(r * 0.22, -r * 0.15);
+      ctx.lineTo(r * 0.32, r * 0.08);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      drawPlushBow(ctx, 0, -r * 0.86, r * 0.42 * ext, '#2e74e6', '#d9f4ff', '#163b7a');
       break;
     }
 
     case 2: {
-      // Rumia: iconic tilted crimson talisman ribbon bow on upper-left with trailing tails
+      // 紫葡萄 · 露米娅: curly grape vine stem + crimson ribbon bow!
       ctx.save();
-      ctx.translate(-r * 0.44, -r * 0.78);
-      ctx.rotate(-0.48);
-      // Ribbon tails
-      ctx.fillStyle = '#d4203e';
-      ctx.strokeStyle = '#ffccd6';
-      ctx.lineWidth = Math.max(0.8, r * 0.028);
+      ctx.strokeStyle = '#4e3524';
+      ctx.lineWidth = Math.max(1.5, r * 0.07);
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(-r * 0.06, 0);
-      ctx.lineTo(-r * 0.28, r * 0.36);
-      ctx.lineTo(-r * 0.1, r * 0.3);
-      ctx.closePath();
-      ctx.fill();
+      ctx.moveTo(0, -r * 0.9);
+      ctx.quadraticCurveTo(r * 0.04, -r * 1.18 * ext, r * 0.2 * ext, -r * 1.24 * ext);
       ctx.stroke();
-      drawRibbonBow(ctx, 0, 0, r * 0.38, '#e62948', '#ffd6de');
+
+      // Curly green grape tendril spiral
+      ctx.strokeStyle = '#6ec255';
+      ctx.lineWidth = Math.max(1.1, r * 0.042);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.04, -r * 1.04);
+      ctx.bezierCurveTo(-r * 0.34, -r * 1.26, -r * 0.44, -r * 0.98, -r * 0.26, -r * 0.96);
+      ctx.stroke();
       ctx.restore();
+
+      drawPlushBow(ctx, r * 0.16, -r * 0.92, r * 0.38 * ext, '#e63950', '#ffe0e6', '#6b1222');
       break;
     }
 
     case 3: {
-      // Flandre: white ruffled mob-cap headband + bright red side-tail ribbon
-      drawMobCap(ctx, r, '#fff5f7', '#e0364f', false);
+      // 草莓 · 芙兰朵露: lush 5-leaf green strawberry calyx cap + tiny red ribbon mob-cap accent!
       ctx.save();
-      ctx.translate(r * 0.62, -r * 0.6);
-      ctx.rotate(0.55);
-      drawRibbonBow(ctx, 0, 0, r * 0.28, '#e0243d', '#ffe066');
+      ctx.translate(0, -r * 0.88);
+      const leafAngles = [-0.85, -0.42, 0, 0.42, 0.85];
+      for (const a of leafAngles) {
+        ctx.save();
+        ctx.rotate(a);
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.12, 0);
+        ctx.quadraticCurveTo(0, r * 0.26, r * 0.12, 0);
+        ctx.quadraticCurveTo(0, -r * 0.16, -r * 0.12, 0);
+        ctx.closePath();
+        ctx.fillStyle = '#5ec454';
+        ctx.fill();
+        ctx.strokeStyle = '#296626';
+        ctx.lineWidth = Math.max(0.8, r * 0.028);
+        ctx.stroke();
+        ctx.restore();
+      }
+      // Short strawberry stem
+      ctx.strokeStyle = '#3f8a36';
+      ctx.lineWidth = Math.max(1.6, r * 0.068);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(0, -r * 0.02);
+      ctx.lineTo(r * 0.06, -r * 0.24 * ext);
+      ctx.stroke();
       ctx.restore();
+
+      // Tiny crimson ribbon bow on Flandre's strawberry cap
+      drawPlushBow(ctx, -r * 0.24, -r * 0.84, r * 0.28 * ext, '#eb364d', '#fff0a6', '#691220');
       break;
     }
 
     case 4: {
-      // Remilia: lavish pink-white Victorian mob cap + twin-tail scarlet bow
-      drawMobCap(ctx, r, '#fff0f5', '#d62442', true);
-      drawRibbonBow(ctx, 0, -r * 0.88, r * 0.34, '#d92140', '#ffd9e3');
+      // 橘子 · 橙: green tangerine leaf + Chen's crimson mob-cap with perky cat ears!
+      drawPlushStemAndLeaf(ctx, r * 0.24, -r * 0.9, r * 0.85 * ext, '#4c7d36', '#72c94d', '#2b4f1d');
+
+      ctx.save();
+      ctx.translate(-r * 0.04, -r * 0.92);
+      // Red plush cap dome
+      ctx.beginPath();
+      ctx.ellipse(0, r * 0.04, r * 0.52 * ext, r * 0.24 * ext, -0.05, Math.PI, TAU);
+      ctx.closePath();
+      ctx.fillStyle = '#db3242';
+      ctx.fill();
+      ctx.strokeStyle = '#63131d';
+      ctx.lineWidth = Math.max(1.0, r * 0.03);
+      ctx.stroke();
+
+      // White frill trim
+      ctx.strokeStyle = '#fff8f0';
+      ctx.lineWidth = Math.max(1.4, r * 0.045);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.5 * ext, r * 0.04);
+      ctx.quadraticCurveTo(0, r * 0.14, r * 0.5 * ext, r * 0.04);
+      ctx.stroke();
+
+      // Perky plush cat ears poking out of the cap!
+      for (const side of [-1, 1]) {
+        ctx.save();
+        ctx.translate(side * r * 0.34 * ext, -r * 0.06);
+        ctx.rotate(side * 0.28);
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.14, r * 0.1);
+        ctx.lineTo(0, -r * 0.24 * ext);
+        ctx.lineTo(r * 0.14, r * 0.1);
+        ctx.closePath();
+        ctx.fillStyle = '#e87a24';
+        ctx.fill();
+        ctx.strokeStyle = '#632909';
+        ctx.lineWidth = Math.max(0.95, r * 0.028);
+        ctx.stroke();
+
+        // Inner pink cat ear
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.07, r * 0.06);
+        ctx.lineTo(0, -r * 0.12 * ext);
+        ctx.lineTo(r * 0.07, r * 0.06);
+        ctx.closePath();
+        ctx.fillStyle = '#ffb5c4';
+        ctx.fill();
+        ctx.restore();
+      }
+      ctx.restore();
       break;
     }
 
     case 5: {
-      // Sakuya: crisp pleated snow-white maid headpiece + emerald twin side bows
-      drawFrillBand(ctx, r, '#ffffff', '#6d82bd');
-      drawRibbonBow(ctx, -r * 0.56, -r * 0.7, r * 0.2, '#24a16a', '#ffffff');
-      drawRibbonBow(ctx, r * 0.56, -r * 0.7, r * 0.2, '#24a16a', '#ffffff');
+      // 青苹果 · 魂魄妖梦: crisp brown apple stem + fresh leaf + Youmu's iconic black plush ribbon bow!
+      drawPlushStemAndLeaf(ctx, 0, -r * 0.9, r * 0.92 * ext, '#5c3824', '#86d658', '#305e1e');
+      drawPlushBow(ctx, -r * 0.22, -r * 0.86, r * 0.38 * ext, '#2c2938', '#e6f7f0', '#13111a');
       break;
     }
 
     case 6: {
-      // Youmu: iconic crisp twin-tail black ribbon bow centered on crown
+      // 雪梨 · 十六夜咲夜: curved pear stem + scalloped white lace maid frill + mini gold pocket watch charm!
+      drawPlushStemAndLeaf(ctx, 0, -r * 0.94, r * 0.82 * ext, '#6b492a', '#8fd15e', '#385c21');
+
+      // Crisp scalloped white maid headband frill across crown
       ctx.save();
-      ctx.translate(0, -r * 0.88);
-      // Sweeping dark ribbon tails
-      ctx.fillStyle = '#181a24';
-      ctx.strokeStyle = '#99fae0';
-      ctx.lineWidth = Math.max(0.9, r * 0.025);
-      for (const side of [-1, 1]) {
+      ctx.translate(0, -r * 0.84);
+      ctx.fillStyle = '#fffdf8';
+      ctx.strokeStyle = '#6b7fa8';
+      ctx.lineWidth = Math.max(0.95, r * 0.022);
+      const frills = 7;
+      for (let i = 0; i < frills; i++) {
+        const t = (i / (frills - 1)) * 2 - 1;
         ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.lineTo(side * r * 0.34, r * 0.26);
-        ctx.lineTo(side * r * 0.16, r * 0.28);
-        ctx.closePath();
+        ctx.arc(t * r * 0.44, -Math.cos(t * 1.1) * r * 0.08, r * 0.11, 0, TAU);
         ctx.fill();
         ctx.stroke();
       }
-      drawRibbonBow(ctx, 0, 0, r * 0.42, '#1c1f2b', '#8ef7d5');
+      // Subtle sapphire maid ribbon band
+      ctx.strokeStyle = '#4e73c4';
+      ctx.lineWidth = Math.max(1.3, r * 0.036);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.46, r * 0.03);
+      ctx.quadraticCurveTo(0, -r * 0.08, r * 0.46, r * 0.03);
+      ctx.stroke();
+      ctx.restore();
+
+      // Miniature golden pocket-watch charm pinned near lower-right peel rim!
+      ctx.save();
+      ctx.translate(r * 0.72, r * 0.46);
+      ctx.fillStyle = '#f2c95c';
+      ctx.strokeStyle = '#6e4c0e';
+      ctx.lineWidth = Math.max(0.9, r * 0.02);
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.15, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#fffdf5';
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.105, 0, TAU);
+      ctx.fill();
+      // Tiny clock hands
+      ctx.strokeStyle = '#334678';
+      ctx.lineWidth = Math.max(0.8, r * 0.018);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(0, -r * 0.075);
+      ctx.moveTo(0, 0);
+      ctx.lineTo(r * 0.055, r * 0.03);
+      ctx.stroke();
       ctx.restore();
       break;
     }
 
     case 7: {
-      // Marisa: iconic oversized jaunty black witch hat with pleated white band & glowing gold star!
+      // 水蜜桃 · 蕾米莉亚: lush peach leaf + frilly ZUN mob-cap with crimson ribbons!
+      drawPlushStemAndLeaf(ctx, r * 0.36, -r * 0.86, r * 0.82 * ext, '#5e3c26', '#72c962', '#2d5e29');
+
       ctx.save();
-      ctx.translate(0, -r * 0.73);
+      ctx.translate(-r * 0.04, -r * 0.92);
+      // Puff scalloped ZUN mob-cap
+      ctx.fillStyle = '#fff5f7';
+      ctx.strokeStyle = '#b34d68';
+      ctx.lineWidth = Math.max(1.0, r * 0.022);
+      ctx.beginPath();
+      ctx.ellipse(0, -r * 0.02, r * 0.56 * ext, r * 0.25 * ext, -0.04, 0, TAU);
+      ctx.fill();
+      ctx.stroke();
+
+      // Crimson ribbon band & twin little side bows
+      ctx.strokeStyle = '#d92647';
+      ctx.lineWidth = Math.max(1.8, r * 0.042);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.52 * ext, r * 0.06);
+      ctx.quadraticCurveTo(0, r * 0.16, r * 0.52 * ext, r * 0.06);
+      ctx.stroke();
+      drawPlushBow(ctx, -r * 0.38 * ext, r * 0.05, r * 0.22 * ext, '#e02b4d', '#ffe3ec', '#6b1224');
+      ctx.restore();
+      break;
+    }
+
+    case 8: {
+      // 菠萝 · 雾雨魔理沙: jaunty tilted black felt witch hat with white band & golden star atop pineapple crown!
+      ctx.save();
+      ctx.translate(r * 0.04, -r * 0.92);
       ctx.rotate(-0.14);
 
-      // Wide curved brim
+      // Wide felt brim
       ctx.beginPath();
-      ctx.ellipse(0, 0, r * 0.88 * ext, r * 0.21, 0, 0, TAU);
-      const brimGrad = ctx.createLinearGradient(-r * 0.8, 0, r * 0.8, 0);
-      brimGrad.addColorStop(0, '#140f29');
-      brimGrad.addColorStop(0.5, '#2b224f');
-      brimGrad.addColorStop(1, '#140f29');
-      ctx.fillStyle = brimGrad;
+      ctx.ellipse(0, 0, r * 0.68 * ext, r * 0.17 * ext, 0, 0, TAU);
+      ctx.fillStyle = '#2a243d';
       ctx.fill();
-      ctx.strokeStyle = '#ffd966';
-      ctx.lineWidth = Math.max(1.2, r * 0.028);
+      ctx.strokeStyle = '#f2c955';
+      ctx.lineWidth = Math.max(1.0, r * 0.02);
       ctx.stroke();
 
-      // Sweeping curled pointed cone
+      // Soft curved witch cone
       ctx.beginPath();
-      ctx.moveTo(-r * 0.45, -r * 0.02);
-      ctx.bezierCurveTo(-r * 0.32, -r * 0.56, r * 0.12, -r * 0.72 * ext, r * 0.5 * ext, -r * 0.5 * ext);
-      ctx.bezierCurveTo(r * 0.24, -r * 0.34, r * 0.36, -r * 0.16, r * 0.45, -r * 0.02);
+      ctx.moveTo(-r * 0.36 * ext, -r * 0.02);
+      ctx.quadraticCurveTo(-r * 0.1 * ext, -r * 0.64 * ext, r * 0.42 * ext, -r * 0.42 * ext);
+      ctx.quadraticCurveTo(r * 0.22 * ext, -r * 0.2 * ext, r * 0.36 * ext, -r * 0.02);
       ctx.closePath();
-      const coneGrad = ctx.createLinearGradient(-r * 0.3, -r * 0.5, r * 0.4, 0);
-      coneGrad.addColorStop(0, '#3a2f66');
-      coneGrad.addColorStop(0.6, '#211940');
-      coneGrad.addColorStop(1, '#130e26');
-      ctx.fillStyle = coneGrad;
+      ctx.fillStyle = '#382f52';
       ctx.fill();
       ctx.stroke();
 
-      // Pleated crisp white ribbon band + bow
-      ctx.beginPath();
-      ctx.moveTo(-r * 0.41, -r * 0.04);
-      ctx.quadraticCurveTo(0, r * 0.07, r * 0.41, -r * 0.04);
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = Math.max(2.2, r * 0.088);
+      // White plush ribbon band
+      ctx.strokeStyle = '#fff9f0';
+      ctx.lineWidth = Math.max(2.2, r * 0.062);
       ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.32 * ext, -r * 0.02);
+      ctx.quadraticCurveTo(0, r * 0.06, r * 0.32 * ext, -r * 0.02);
       ctx.stroke();
 
-      // Glowing golden star brooch on hat
-      ctx.fillStyle = '#ffe46b';
-      ctx.strokeStyle = '#99640c';
-      ctx.lineWidth = Math.max(0.8, r * 0.018);
-      drawStarPath(ctx, -r * 0.15, -r * 0.18, 5, r * 0.145, r * 0.064);
+      // Golden star badge on hat
+      ctx.fillStyle = '#ffe266';
+      ctx.strokeStyle = '#734d0e';
+      ctx.lineWidth = Math.max(0.7, r * 0.015);
+      drawStarPath(ctx, -r * 0.12 * ext, -r * 0.24 * ext, 5, r * 0.12 * ext, r * 0.055 * ext);
       ctx.fill();
       ctx.stroke();
       ctx.restore();
       break;
     }
 
-    case 8: {
-      // Reimu: bright red-white shrine bow knot, twin white hair-tubes & Yin-Yang hairpiece!
-      ctx.fillStyle = '#fff8f0';
-      ctx.strokeStyle = '#db1f38';
-      ctx.lineWidth = Math.max(1.2, r * 0.026);
+    case 9: {
+      // 红富士大苹果 · 博丽灵梦: authentic 苹果乐 brown felt stem + pastel green leaf + white bow knot!
+      drawPlushStemAndLeaf(ctx, 0, -r * 0.9, r * 0.98 * ext, '#543020', '#96d964', '#335e1e');
+
+      // Cozy center shrine bow knot right at base of stem
+      ctx.fillStyle = '#fff7ed';
+      ctx.strokeStyle = '#c42136';
+      ctx.lineWidth = Math.max(1.2, r * 0.022);
       ctx.beginPath();
-      ctx.arc(0, -r * 0.84, r * 0.155, 0, TAU);
+      ctx.ellipse(0, -r * 0.82, r * 0.145, r * 0.105, 0, 0, TAU);
       ctx.fill();
       ctx.stroke();
-
-      // Twin iconic white shrine hair-tubes with crimson bands
-      for (const side of [-1, 1]) {
-        ctx.save();
-        ctx.translate(side * r * 0.74, -r * 0.06);
-        ctx.rotate(side * 0.14);
-        roundRectPath(ctx, -r * 0.085, -r * 0.22, r * 0.17, r * 0.42, r * 0.055);
-        ctx.fillStyle = '#fffcf7';
-        ctx.fill();
-        ctx.strokeStyle = '#db1f38';
-        ctx.lineWidth = Math.max(1.1, r * 0.022);
-        ctx.stroke();
-
-        // Red ribbon tie wrapping the hair tube
-        ctx.fillStyle = '#e0243d';
-        ctx.fillRect(-r * 0.082, -r * 0.04, r * 0.164, r * 0.08);
-        ctx.restore();
-      }
-
-      // Crisp miniature Yin-Yang hairpiece pinned on upper-left bangs
-      drawYinYangBadge(ctx, -r * 0.44, -r * 0.56, r * 0.125);
-      break;
-    }
-
-    case 9: {
-      // Yukari: ornate gold-trimmed white mob cap + crimson bow + golden hanging tassels
-      drawMobCap(ctx, r, '#fff9eb', '#e0a938', true);
-      drawRibbonBow(ctx, 0, -r * 0.88, r * 0.36, '#c92059', '#f7d572');
-
-      // Twin small gold bead tassels on mob-cap sides
-      ctx.fillStyle = '#f7d572';
-      ctx.strokeStyle = '#75460e';
-      ctx.lineWidth = Math.max(0.8, r * 0.018);
-      for (const side of [-1, 1]) {
-        ctx.beginPath();
-        ctx.arc(side * r * 0.66, -r * 0.58, r * 0.06, 0, TAU);
-        ctx.fill();
-        ctx.stroke();
-      }
       break;
     }
 
     case 10: {
-      // Ibuki Suika: red & violet horn bows + geometric charm band (● ▲ ■) + festive sparkles!
-      drawRibbonBow(ctx, -r * 0.38, -r * 0.79, r * 0.19, '#e62e49', '#ffe470');
-      drawRibbonBow(ctx, r * 0.38, -r * 0.79, r * 0.19, '#8b46eb', '#ffe470');
-
-      // Golden forehead charm chain
-      const by = -r * 0.6;
-      ctx.strokeStyle = '#ffe470';
-      ctx.lineWidth = Math.max(1.4, r * 0.024);
+      // 大西瓜 · 伊吹萃香: curly dark-green watermelon stem + crimson & purple horn ribbons!
+      ctx.save();
+      ctx.strokeStyle = '#21592f';
+      ctx.lineWidth = Math.max(2.0, r * 0.045);
+      ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(-r * 0.38, by);
-      ctx.quadraticCurveTo(0, by + r * 0.1, r * 0.38, by);
+      ctx.moveTo(0, -r * 0.94);
+      ctx.quadraticCurveTo(-r * 0.04, -r * 1.14 * ext, r * 0.14 * ext, -r * 1.16 * ext);
       ctx.stroke();
+      ctx.restore();
 
-      // Red Circle bead (●)
-      ctx.fillStyle = '#ff4d6d';
-      ctx.strokeStyle = '#4a121f';
-      ctx.lineWidth = Math.max(0.9, r * 0.016);
-      ctx.beginPath();
-      ctx.arc(-r * 0.23, by + r * 0.04, r * 0.068, 0, TAU);
-      ctx.fill();
-      ctx.stroke();
-
-      // Golden Triangle bead (▲)
-      ctx.fillStyle = '#ffe46b';
-      ctx.beginPath();
-      ctx.moveTo(0, by - r * 0.025);
-      ctx.lineTo(r * 0.075, by + r * 0.105);
-      ctx.lineTo(-r * 0.075, by + r * 0.105);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      // Cerulean Square bead (■)
-      ctx.fillStyle = '#52d6ff';
-      ctx.fillRect(r * 0.165, by - r * 0.02, r * 0.125, r * 0.125);
-      ctx.strokeRect(r * 0.165, by - r * 0.02, r * 0.125, r * 0.125);
+      // Crimson bow on left horn base, violet bow on right horn base!
+      drawPlushBow(ctx, -r * 0.38 * ext, -r * 0.84 * ext, r * 0.24 * ext, '#e3344b', '#ffe694', '#5c121e');
+      drawPlushBow(ctx, r * 0.38 * ext, -r * 0.84 * ext, r * 0.24 * ext, '#8c4de6', '#ffe694', '#351666');
       break;
     }
   }
 }
 
-function drawMobCap(
+/**
+ * Draws a cute plush felt fruit stem + soft oval felt leaf (homage to 苹果乐's top felt stem & leaf!).
+ */
+function drawPlushStemAndLeaf(
   ctx: CanvasRenderingContext2D,
-  r: number,
-  fill: string,
-  trim: string,
-  withDome: boolean
+  x: number,
+  y: number,
+  scaleR: number,
+  stemColor: string,
+  leafColor: string,
+  leafOutline: string
 ): void {
   ctx.save();
-  if (withDome) {
-    // Soft puffy Victorian mob-cap crown dome sitting gently atop head
-    ctx.beginPath();
-    ctx.ellipse(0, -r * 0.86, r * 0.56, r * 0.24, 0, Math.PI, TAU);
-    ctx.closePath();
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.strokeStyle = trim;
-    ctx.lineWidth = Math.max(1, r * 0.026);
-    ctx.stroke();
-  }
-  drawFrillBand(ctx, r, fill, trim);
+  ctx.translate(x, y);
+
+  // Soft pastel-green felt leaf
+  ctx.save();
+  ctx.translate(-scaleR * 0.05, -scaleR * 0.08);
+  ctx.rotate(-0.55);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(-scaleR * 0.18, -scaleR * 0.2, -scaleR * 0.36, -scaleR * 0.06);
+  ctx.quadraticCurveTo(-scaleR * 0.2, scaleR * 0.14, 0, 0);
+  ctx.closePath();
+  ctx.fillStyle = leafColor;
+  ctx.fill();
+  ctx.strokeStyle = leafOutline;
+  ctx.lineWidth = Math.max(0.85, scaleR * 0.025);
+  ctx.stroke();
+  ctx.restore();
+
+  // Chunky soft felt brown/green stem (just like 苹果乐!)
+  ctx.beginPath();
+  ctx.moveTo(-scaleR * 0.055, scaleR * 0.05);
+  ctx.quadraticCurveTo(-scaleR * 0.04, -scaleR * 0.16, scaleR * 0.05, -scaleR * 0.28);
+  ctx.lineTo(scaleR * 0.145, -scaleR * 0.23);
+  ctx.quadraticCurveTo(scaleR * 0.06, -scaleR * 0.1, scaleR * 0.055, scaleR * 0.05);
+  ctx.closePath();
+  ctx.fillStyle = stemColor;
+  ctx.fill();
+  ctx.strokeStyle = '#331c12';
+  ctx.lineWidth = Math.max(0.8, scaleR * 0.022);
+  ctx.stroke();
+
   ctx.restore();
 }
 
-function drawFrillBand(
-  ctx: CanvasRenderingContext2D,
-  r: number,
-  fill: string,
-  trim: string
-): void {
-  ctx.save();
-  const scallops = 7;
-  ctx.fillStyle = fill;
-  ctx.strokeStyle = trim;
-  ctx.lineWidth = Math.max(0.95, r * 0.026);
-  for (let i = 0; i < scallops; i++) {
-    const t = i / (scallops - 1);
-    const a = -Math.PI * 0.83 + t * Math.PI * 0.66;
-    const fx = Math.cos(a) * r * 0.86;
-    const fy = Math.sin(a) * r * 0.86;
-    ctx.beginPath();
-    ctx.arc(fx, fy, r * 0.145, 0, TAU);
-    ctx.fill();
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-function drawRibbonBow(
+function drawPlushBow(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   size: number,
   fill: string,
+  trim: string,
   stroke: string
 ): void {
   ctx.save();
   ctx.translate(x, y);
-  ctx.fillStyle = fill;
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = Math.max(0.9, size * 0.1);
-  ctx.lineJoin = 'round';
-
   for (const side of [-1, 1]) {
     ctx.beginPath();
     ctx.moveTo(0, 0);
-    ctx.quadraticCurveTo(side * size * 0.62, -size * 0.58, side * size, -size * 0.36);
-    ctx.quadraticCurveTo(side * size * 0.96, size * 0.12, side * size * 0.82, size * 0.42);
-    ctx.quadraticCurveTo(side * size * 0.42, size * 0.32, 0, 0);
+    ctx.quadraticCurveTo(side * size * 0.65, -size * 0.56, side * size, -size * 0.14);
+    ctx.quadraticCurveTo(side * size * 0.92, size * 0.42, 0, size * 0.14);
     ctx.closePath();
+    ctx.fillStyle = fill;
     ctx.fill();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = Math.max(0.85, size * 0.09);
     ctx.stroke();
   }
-
   ctx.beginPath();
-  ctx.arc(0, 0, size * 0.25, 0, TAU);
+  ctx.arc(0, size * 0.04, size * 0.22, 0, TAU);
+  ctx.fillStyle = trim;
   ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = Math.max(0.8, size * 0.08);
   ctx.stroke();
   ctx.restore();
 }
 
-function drawYinYangBadge(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  yr: number
-): void {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.beginPath();
-  ctx.arc(0, 0, yr, 0, TAU);
-  ctx.fillStyle = '#ffffff';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(0, 0, yr, -Math.PI * 0.5, Math.PI * 0.5);
-  ctx.fillStyle = '#db1f38';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(0, -yr * 0.5, yr * 0.5, 0, TAU);
-  ctx.fillStyle = '#db1f38';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(0, yr * 0.5, yr * 0.5, 0, TAU);
-  ctx.fillStyle = '#ffffff';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(0, -yr * 0.5, yr * 0.18, 0, TAU);
-  ctx.fillStyle = '#ffffff';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(0, yr * 0.5, yr * 0.18, 0, TAU);
-  ctx.fillStyle = '#db1f38';
-  ctx.fill();
-  ctx.strokeStyle = '#750c1d';
-  ctx.lineWidth = Math.max(0.8, yr * 0.1);
-  ctx.beginPath();
-  ctx.arc(0, 0, yr, 0, TAU);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawGapEye(
+function drawMiniGapEye(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
@@ -1631,28 +1931,19 @@ function drawGapEye(
   ctx.quadraticCurveTo(0, -halfH, halfW, 0);
   ctx.quadraticCurveTo(0, halfH, -halfW, 0);
   ctx.closePath();
-  ctx.fillStyle = '#140624';
+  ctx.fillStyle = '#1a072e';
   ctx.fill();
-  ctx.strokeStyle = '#e63259';
-  ctx.lineWidth = Math.max(1.1, halfW * 0.065);
+  ctx.strokeStyle = '#e6395c';
+  ctx.lineWidth = Math.max(0.9, halfW * 0.1);
   ctx.stroke();
 
-  // Glowing golden-crimson iris peering out of the gap
-  ctx.fillStyle = '#fff5cc';
+  ctx.fillStyle = '#fff4cc';
   ctx.beginPath();
-  ctx.ellipse(0, 0, halfW * 0.34, halfH * 0.48, 0, 0, TAU);
+  ctx.ellipse(0, 0, halfW * 0.34, halfH * 0.46, 0, 0, TAU);
   ctx.fill();
-  ctx.fillStyle = '#e0284c';
+  ctx.fillStyle = '#d9264a';
   ctx.beginPath();
-  ctx.ellipse(0, 0, halfW * 0.17, halfH * 0.38, 0, 0, TAU);
-  ctx.fill();
-  ctx.fillStyle = '#180624';
-  ctx.beginPath();
-  ctx.ellipse(0, 0, halfW * 0.075, halfH * 0.26, 0, 0, TAU);
-  ctx.fill();
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.arc(-halfW * 0.06, -halfH * 0.1, Math.max(0.7, halfW * 0.05), 0, TAU);
+  ctx.ellipse(0, 0, halfW * 0.16, halfH * 0.35, 0, 0, TAU);
   ctx.fill();
   ctx.restore();
 }
@@ -1661,21 +1952,30 @@ function traceWatermelonStripe(ctx: CanvasRenderingContext2D, x0: number, r: num
   ctx.beginPath();
   ctx.moveTo(x0, -r * 1.06);
   ctx.bezierCurveTo(
-    x0 - r * 0.17,
+    x0 - r * 0.16,
     -r * 0.46,
-    x0 + r * 0.17,
+    x0 + r * 0.16,
     -r * 0.1,
     x0 - r * 0.06,
     r * 0.32
   );
   ctx.bezierCurveTo(
-    x0 - r * 0.18,
+    x0 - r * 0.16,
     r * 0.64,
     x0 + r * 0.14,
     r * 0.86,
     x0,
     r * 1.08
   );
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const clean = hex.replace('#', '');
+  const n = parseInt(clean, 16);
+  const red = (n >> 16) & 255;
+  const green = (n >> 8) & 255;
+  const blue = n & 255;
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
 export function drawStarPath(
