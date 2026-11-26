@@ -4,11 +4,11 @@ import {
   PLAYABLE_HEIGHT,
   STAGE_HEIGHT,
   STAGE_WIDTH,
-  type CharacterId,
+  type DanmakuOrb,
   type FloatingText,
   type Particle,
   type PipeObstacle,
-  type PlayerState,
+  type PlayerAfterimage,
   type RenderState,
   type StarCollectible,
 } from './types';
@@ -166,6 +166,8 @@ interface CachedGradients {
   playerGlowCirno: CanvasGradient;
   powerAura: CanvasGradient;
   faithAura: CanvasGradient;
+  danmakuScarletAura: CanvasGradient;
+  danmakuGoldAura: CanvasGradient;
   skyGrad: CanvasGradient | null;
   skyKey: number;
 }
@@ -316,6 +318,18 @@ export class FlappyRenderer {
     faithAura.addColorStop(0.5, 'rgba(250, 204, 21, 0.36)');
     faithAura.addColorStop(1, 'rgba(56, 189, 248, 0)');
 
+    const danmakuScarletAura = ctx.createRadialGradient(0, 0, 4, 0, 0, 28);
+    danmakuScarletAura.addColorStop(0, 'rgba(255, 224, 232, 0.92)');
+    danmakuScarletAura.addColorStop(0.45, 'rgba(244, 63, 94, 0.56)');
+    danmakuScarletAura.addColorStop(0.8, 'rgba(225, 29, 72, 0.2)');
+    danmakuScarletAura.addColorStop(1, 'rgba(190, 18, 60, 0)');
+
+    const danmakuGoldAura = ctx.createRadialGradient(0, 0, 4, 0, 0, 28);
+    danmakuGoldAura.addColorStop(0, 'rgba(255, 251, 210, 0.92)');
+    danmakuGoldAura.addColorStop(0.45, 'rgba(250, 204, 21, 0.56)');
+    danmakuGoldAura.addColorStop(0.8, 'rgba(245, 158, 11, 0.2)');
+    danmakuGoldAura.addColorStop(1, 'rgba(217, 119, 6, 0)');
+
     this.cache = {
       ctx,
       bambooShaft,
@@ -329,6 +343,8 @@ export class FlappyRenderer {
       playerGlowCirno,
       powerAura,
       faithAura,
+      danmakuScarletAura,
+      danmakuGoldAura,
       skyGrad: null,
       skyKey: -1,
     };
@@ -379,18 +395,40 @@ export class FlappyRenderer {
     this.drawShrineHillsAndBambooGrove(ctx, cache, state, palette, scroll);
     this.drawAmbientMistAndMotes(ctx, state, palette, scroll);
 
-    // Sub-pixel smooth pipes & collectibles
+    // Sub-pixel smooth pipes, collectibles & incident danmaku orbs
+    const playerY = lerp(state.player.prevY, state.player.y, alpha);
+    const playerRot = lerp(state.player.prevRotation, state.player.rotation, alpha);
+
     for (let i = 0; i < state.pipes.length; i++) {
       const pipe = state.pipes[i];
       const pipeX = lerp(pipe.prevX, pipe.x, alpha);
       this.drawPipePair(ctx, cache, pipe, pipeX, state.elapsed);
     }
+
     for (let i = 0; i < state.stars.length; i++) {
       const star = state.stars[i];
       if (!star.collected) {
         const sx = lerp(star.prevX, star.x, alpha);
         const sy = lerp(star.prevY, star.y, alpha);
+        if (state.character === 'reimu' && state.phase === 'playing') {
+          const dx = state.player.x - sx;
+          const dy = playerY - sy;
+          const dist = Math.hypot(dx, dy);
+          if (dist < PHYSICS.REIMU_MAGNET_RADIUS) {
+            this.drawMagnetTether(ctx, sx, sy, state.player.x, playerY, 1 - dist / PHYSICS.REIMU_MAGNET_RADIUS);
+          }
+        }
         this.drawCollectible(ctx, cache, star, sx, sy, state.elapsed);
+      }
+    }
+
+    const isFrozen = state.cirnoFreezeTimer > 0;
+    for (let i = 0; i < state.danmaku.length; i++) {
+      const orb = state.danmaku[i];
+      if (!orb.shattered) {
+        const ox = lerp(orb.prevX, orb.x, alpha);
+        const oy = lerp(orb.prevY, orb.y, alpha);
+        this.drawDanmakuOrb(ctx, cache, orb, ox, oy, state.elapsed, isFrozen);
       }
     }
 
@@ -398,19 +436,34 @@ export class FlappyRenderer {
     this.drawGround(ctx, cache, state, scroll);
     this.drawSpeedLines(ctx, state, scroll);
 
+    // Aya maple-leaf dash afterimages
+    if (state.afterimages.length > 0) {
+      this.drawAfterimages(ctx, state.afterimages);
+    }
+
+    // Reimu expanding Yin-Yang barrier pulse
+    if (state.reimuBarrierTimer > 0) {
+      this.drawReimuBarrierWave(ctx, state);
+    }
+
     // Pooled active particles
     this.drawParticles(ctx, state.particles, state.particleCount);
 
     // Detailed chibi flyer with sub-pixel interpolation + squash-and-stretch
-    const playerY = lerp(state.player.prevY, state.player.y, alpha);
-    const playerRot = lerp(state.player.prevRotation, state.player.rotation, alpha);
-    this.drawPlayer(ctx, cache, state.character, state.player, playerY, playerRot, state.phase, state.elapsed);
+    this.drawPlayer(ctx, cache, state, playerY, playerRot);
 
-    // Floating score / collectible popups
+    // Cirno Perfect Freeze frosty crystalline screen border
+    if (state.cirnoFreezeTimer > 0) {
+      this.drawFrostVignette(ctx, state.cirnoFreezeTimer, state.elapsed);
+    }
+
+    // Floating score / graze / shatter popups
     this.drawFloatingTexts(ctx, state.floatingTexts);
 
-    // Sky phase milestone banner
-    if (state.phaseBannerTimer > 0 && state.phaseBannerText) {
+    // Spell Card activation banner (takes priority cleanly over sky banner)
+    if (state.spellBannerTimer > 0 && state.spellBannerText) {
+      this.drawSpellBanner(ctx, state.spellBannerText, state.spellBannerTimer, state.spellBannerColor);
+    } else if (state.phaseBannerTimer > 0 && state.phaseBannerText) {
       this.drawPhaseBanner(ctx, state.phaseBannerText, state.phaseBannerTimer);
     }
 
@@ -972,11 +1025,35 @@ export class FlappyRenderer {
     ctx.translate(pipeX, 0);
 
     if (pipe.style === 'bamboo') {
-      this.drawBambooPillar(ctx, cache, 0, pipe.width, topHeight, true, elapsed + pipe.lanternPhase);
-      this.drawBambooPillar(ctx, cache, bottomY, pipe.width, bottomHeight, false, elapsed + pipe.lanternPhase + 1.2);
+      if (!pipe.topShattered) {
+        this.drawBambooPillar(ctx, cache, 0, pipe.width, topHeight, true, elapsed + pipe.lanternPhase);
+      }
+      if (!pipe.bottomShattered) {
+        this.drawBambooPillar(
+          ctx,
+          cache,
+          bottomY,
+          pipe.width,
+          bottomHeight,
+          false,
+          elapsed + pipe.lanternPhase + 1.2,
+        );
+      }
     } else {
-      this.drawToriiPillar(ctx, cache, 0, pipe.width, topHeight, true, elapsed + pipe.lanternPhase);
-      this.drawToriiPillar(ctx, cache, bottomY, pipe.width, bottomHeight, false, elapsed + pipe.lanternPhase + 1.5);
+      if (!pipe.topShattered) {
+        this.drawToriiPillar(ctx, cache, 0, pipe.width, topHeight, true, elapsed + pipe.lanternPhase);
+      }
+      if (!pipe.bottomShattered) {
+        this.drawToriiPillar(
+          ctx,
+          cache,
+          bottomY,
+          pipe.width,
+          bottomHeight,
+          false,
+          elapsed + pipe.lanternPhase + 1.5,
+        );
+      }
     }
 
     ctx.restore();
@@ -1578,25 +1655,119 @@ export class FlappyRenderer {
     ctx.fillRect(0, y - 1, STAGE_WIDTH, 1.5);
   }
 
+  private drawMagnetTether(
+    ctx: CanvasRenderingContext2D,
+    sx: number,
+    sy: number,
+    px: number,
+    py: number,
+    strength: number,
+  ): void {
+    ctx.save();
+    ctx.strokeStyle = `rgba(253, 164, 175, ${0.18 + strength * 0.42})`;
+    ctx.lineWidth = 1.4 + strength * 1.2;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(px, py);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private drawDanmakuOrb(
+    ctx: CanvasRenderingContext2D,
+    cache: CachedGradients,
+    orb: DanmakuOrb,
+    ox: number,
+    oy: number,
+    elapsed: number,
+    isFrozen: boolean,
+  ): void {
+    const r = orb.radius;
+    const isScarlet = orb.color === 'scarlet';
+    const pulse = 1 + Math.sin(elapsed * 7.5 + orb.phase) * 0.06;
+
+    ctx.save();
+    ctx.translate(ox, oy);
+
+    // Outer luminous danmaku aura (cached radial gradient)
+    ctx.save();
+    ctx.scale(pulse, pulse);
+    ctx.fillStyle = isScarlet ? cache.danmakuScarletAura : cache.danmakuGoldAura;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 2.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Subtle frosted crystal halo around bullets while Cirno's Perfect Freeze is active
+    if (isFrozen) {
+      ctx.strokeStyle = 'rgba(186, 230, 253, 0.72)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(0, 0, r + 4.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Subtle grazed rim cue or crisp dark contrast ring so orbs always pop against Scarlet sky
+    ctx.strokeStyle = orb.grazed
+      ? 'rgba(254, 240, 138, 0.75)'
+      : isScarlet
+        ? 'rgba(60, 6, 22, 0.65)'
+        : 'rgba(78, 34, 6, 0.6)';
+    ctx.lineWidth = 1.8;
+
+    // Saturated classic Touhou magic bullet ring
+    ctx.fillStyle = isScarlet ? '#f43f5e' : '#f59e0b';
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Mid radiant energy halo
+    ctx.fillStyle = isScarlet ? '#fda4af' : '#fef08a';
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.78, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Pure bright glowing core (authentic Touhou bullet readability!)
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.56, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Tiny rotating sparkle glint along rim
+    const a = elapsed * 4.2 + orb.phase;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(Math.cos(a) * (r * 0.72), Math.sin(a) * (r * 0.72), 1.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
   private drawSpeedLines(ctx: CanvasRenderingContext2D, state: RenderState, scroll: number): void {
     if (state.phase !== 'playing') return;
+    const isDashing = state.ayaDashTimer > 0;
     const speedRatio = Math.max(
       0,
       (state.speed - PHYSICS.BASE_SPEED) / (PHYSICS.MAX_SPEED - PHYSICS.BASE_SPEED),
     );
-    const alpha = 0.06 + speedRatio * 0.15;
+    const alpha = isDashing ? 0.42 : 0.06 + speedRatio * 0.15;
+    const lineCount = isDashing ? 12 : 6;
 
     ctx.save();
-    ctx.strokeStyle = `rgba(255, 248, 232, ${alpha})`;
-    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = isDashing
+      ? `rgba(254, 240, 138, ${alpha})`
+      : `rgba(255, 248, 232, ${alpha})`;
+    ctx.lineWidth = isDashing ? 2.1 : 1.4;
     ctx.lineCap = 'round';
 
-    for (let i = 0; i < 6; i++) {
-      const period = 380 + i * 62;
+    for (let i = 0; i < lineCount; i++) {
+      const period = 380 + (i % 6) * 62;
       const x =
-        STAGE_WIDTH + 60 - (((scroll * (1.58 + i * 0.12) + i * 113) % period) + period) % period;
-      const y = 38 + i * 86 + Math.sin(state.elapsed * 2 + i) * 10;
-      const len = 30 + speedRatio * 46 + (i % 3) * 14;
+        STAGE_WIDTH + 60 - (((scroll * (1.58 + (i % 6) * 0.12) + i * 113) % period) + period) % period;
+      const y = 26 + i * (PLAYABLE_HEIGHT / lineCount) + Math.sin(state.elapsed * 2 + i) * 10;
+      const len = (isDashing ? 86 : 30) + speedRatio * 46 + (i % 3) * 14;
       ctx.beginPath();
       ctx.moveTo(x, y);
       ctx.lineTo(x + len, y);
@@ -1605,22 +1776,123 @@ export class FlappyRenderer {
     ctx.restore();
   }
 
+  private drawAfterimages(ctx: CanvasRenderingContext2D, afterimages: PlayerAfterimage[]): void {
+    for (let i = 0; i < afterimages.length; i++) {
+      const img = afterimages[i];
+      const a = clamp(img.alpha, 0, 1);
+      ctx.save();
+      ctx.translate(img.x, img.y);
+      ctx.rotate(img.rotation);
+      ctx.globalAlpha = a * 0.56;
+
+      // Crimson-gold tengu wind silhouette afterimage
+      const grad = ctx.createRadialGradient(0, 0, 2, -6, 0, 26);
+      grad.addColorStop(0, 'rgba(254, 240, 138, 0.95)');
+      grad.addColorStop(0.5, 'rgba(239, 68, 68, 0.72)');
+      grad.addColorStop(1, 'rgba(185, 28, 28, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.ellipse(-4, 0, 26, 17, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Stylized winged silhouette echo
+      ctx.fillStyle = 'rgba(255, 224, 150, 0.85)';
+      ctx.beginPath();
+      ctx.arc(3, -5, 10.5, 0, Math.PI * 2);
+      ctx.ellipse(-2, 6, 10, 7.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Trailing crimson wind wing sweep
+      ctx.fillStyle = 'rgba(220, 38, 38, 0.78)';
+      ctx.beginPath();
+      ctx.moveTo(-4, 0);
+      ctx.quadraticCurveTo(-24, -14, -34, -2);
+      ctx.quadraticCurveTo(-22, 12, -4, 6);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    }
+  }
+
+  private drawReimuBarrierWave(ctx: CanvasRenderingContext2D, state: RenderState): void {
+    const progress = 1 - clamp(state.reimuBarrierTimer / PHYSICS.REIMU_BARRIER_VISUAL_DURATION, 0, 1);
+    const radius = 24 + progress * 188;
+    const alpha = Math.pow(1 - progress, 0.75);
+
+    ctx.save();
+    ctx.translate(state.reimuBarrierX, state.reimuBarrierY);
+
+    // Translucent crimson-white spiritual dome
+    const domeGrad = ctx.createRadialGradient(0, 0, radius * 0.55, 0, 0, radius);
+    domeGrad.addColorStop(0, 'rgba(255, 245, 247, 0)');
+    domeGrad.addColorStop(0.72, `rgba(251, 113, 133, ${0.18 * alpha})`);
+    domeGrad.addColorStop(0.92, `rgba(255, 241, 242, ${0.55 * alpha})`);
+    domeGrad.addColorStop(1, `rgba(225, 29, 72, ${0.85 * alpha})`);
+    ctx.fillStyle = domeGrad;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Crisp double barrier ring
+    ctx.strokeStyle = `rgba(255, 250, 240, ${0.9 * alpha})`;
+    ctx.lineWidth = 3 * alpha + 1;
+    ctx.beginPath();
+    ctx.arc(0, 0, radius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = `rgba(225, 29, 72, ${0.8 * alpha})`;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([10, 6]);
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(8, radius - 8), state.elapsed * 3, state.elapsed * 3 + Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 8 rotating shrine diamond runes along the barrier circumference
+    ctx.fillStyle = `rgba(254, 240, 138, ${0.9 * alpha})`;
+    for (let i = 0; i < 8; i++) {
+      const a = state.elapsed * 2.4 + (i * Math.PI) / 4;
+      const rx = Math.cos(a) * radius;
+      const ry = Math.sin(a) * radius;
+      ctx.save();
+      ctx.translate(rx, ry);
+      ctx.rotate(a);
+      ctx.beginPath();
+      ctx.moveTo(5, 0);
+      ctx.lineTo(0, 3);
+      ctx.lineTo(-5, 0);
+      ctx.lineTo(0, -3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
   private drawPlayer(
     ctx: CanvasRenderingContext2D,
     cache: CachedGradients,
-    character: CharacterId,
-    player: PlayerState,
+    state: RenderState,
     playerY: number,
     playerRot: number,
-    phase: RenderState['phase'],
-    elapsed: number,
   ): void {
+    const { character, player, phase, elapsed } = state;
+    const isDashing = state.ayaDashTimer > 0;
+    const isInvincible = player.invincibleTimer > 0;
+
     ctx.save();
     ctx.translate(player.x, playerY);
 
+    // Subtle blink shimmer in final 0.25s of post-Deathbomb invincibility
+    if (isInvincible && !isDashing && player.invincibleTimer < 0.25) {
+      ctx.globalAlpha = Math.sin(elapsed * 42) > 0 ? 1 : 0.62;
+    }
+
     // Subtle character glow + pulsing energy boost on flap
     ctx.save();
-    const glowScale = 1 + player.flapGlow * 0.28;
+    const glowScale = 1 + player.flapGlow * 0.28 + (isDashing ? 0.35 : 0);
     ctx.scale(glowScale, glowScale);
     ctx.fillStyle =
       character === 'cirno'
@@ -1632,6 +1904,18 @@ export class FlappyRenderer {
     ctx.arc(0, 0, 34, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+
+    // Electric white/gold Graze flash ring around player
+    if (player.grazeFlash > 0.02) {
+      const gf = player.grazeFlash;
+      ctx.save();
+      ctx.strokeStyle = `rgba(255, 249, 196, ${gf * 0.92})`;
+      ctx.lineWidth = 2.4 * gf + 0.8;
+      ctx.beginPath();
+      ctx.arc(0, 0, player.radius + 10 + (1 - gf) * 12, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // Reimu's back orbiting Yin-Yang orb with soft trail aura
     if (character === 'reimu') {
@@ -1650,7 +1934,7 @@ export class FlappyRenderer {
 
     const isDizzy = phase === 'dying' || phase === 'gameover';
     const isBlinking = !isDizzy && player.blinkDuration > 0;
-    const isDetermined = !isDizzy && (player.determinedTimer > 0 || player.vy < -180);
+    const isDetermined = !isDizzy && (player.determinedTimer > 0 || player.vy < -180 || isDashing);
     const flapAngle = isDizzy
       ? 0.45
       : Math.sin(player.wingPhase) * (0.62 + player.wingBoost * 0.36);
@@ -1668,6 +1952,33 @@ export class FlappyRenderer {
       this.drawCirno(ctx, flapAngle, player.wingBoost, dragY, wave, isDizzy, isBlinking, isDetermined, elapsed);
     }
 
+    // Aya blazing wind-cone gale aura slicing ahead during 疾风「幻想风靡」
+    if (isDashing) {
+      const dashGrad = ctx.createLinearGradient(34, 0, -34, 0);
+      dashGrad.addColorStop(0, 'rgba(255, 253, 224, 0.92)');
+      dashGrad.addColorStop(0.42, 'rgba(250, 204, 21, 0.56)');
+      dashGrad.addColorStop(0.75, 'rgba(239, 68, 68, 0.32)');
+      dashGrad.addColorStop(1, 'rgba(220, 38, 38, 0)');
+      ctx.fillStyle = dashGrad;
+      ctx.beginPath();
+      ctx.moveTo(38, 0);
+      ctx.quadraticCurveTo(10, -28, -32, -22);
+      ctx.lineTo(-22, 0);
+      ctx.lineTo(-32, 22);
+      ctx.quadraticCurveTo(10, 28, 38, 0);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(36, 0);
+      ctx.quadraticCurveTo(12, -21, -24, -18);
+      ctx.moveTo(36, 0);
+      ctx.quadraticCurveTo(12, 21, -24, 18);
+      ctx.stroke();
+    }
+
     ctx.restore();
 
     // Front orbiting Yin-Yang orb for Reimu
@@ -1681,6 +1992,46 @@ export class FlappyRenderer {
         5.8,
         -player.orbAngle * 2.1,
       );
+      ctx.restore();
+    }
+
+    // Protective rotating Yin-Yang barrier shield while invincible (post-Deathbomb or post-dash grace)
+    if (isInvincible && !isDashing) {
+      ctx.save();
+      ctx.translate(player.x, playerY);
+      const shieldAlpha = clamp(player.invincibleTimer / 0.3, 0.25, 0.9);
+      ctx.strokeStyle =
+        character === 'reimu'
+          ? `rgba(254, 205, 211, ${shieldAlpha})`
+          : `rgba(254, 240, 138, ${shieldAlpha})`;
+      ctx.lineWidth = 2.2;
+      ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      ctx.arc(0, 0, 25, elapsed * 5, elapsed * 5 + Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.strokeStyle =
+        character === 'reimu'
+          ? `rgba(225, 29, 72, ${shieldAlpha * 0.72})`
+          : `rgba(245, 158, 11, ${shieldAlpha * 0.72})`;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(0, 0, 21, -elapsed * 4, -elapsed * 4 + Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Reimu iconic Touhou canon small-hitbox center dot during gameplay
+    if (character === 'reimu' && phase === 'playing') {
+      ctx.save();
+      ctx.translate(player.x, playerY);
+      ctx.strokeStyle = 'rgba(225, 29, 72, 0.88)';
+      ctx.lineWidth = 1.6;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+      ctx.beginPath();
+      ctx.arc(0, 0, 3.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
       ctx.restore();
     }
 
@@ -2485,6 +2836,80 @@ export class FlappyRenderer {
           ctx.fill();
           break;
         }
+        case 'grazeSpark': {
+          // Razor-sharp electric white/gold Touhou Graze spark streak
+          const s = p.size * (0.45 + 0.55 * alpha);
+          ctx.strokeStyle = p.secondaryColor;
+          ctx.lineWidth = 2.6 * alpha + 0.6;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(-s, 0);
+          ctx.lineTo(s, 0);
+          ctx.stroke();
+
+          ctx.strokeStyle = p.color;
+          ctx.lineWidth = 1.2 * alpha + 0.4;
+          ctx.beginPath();
+          ctx.moveTo(-s * 0.85, 0);
+          ctx.lineTo(s * 0.85, 0);
+          ctx.stroke();
+          break;
+        }
+        case 'bambooShard': {
+          const s = p.size;
+          ctx.fillStyle = p.color;
+          ctx.strokeStyle = '#092417';
+          ctx.lineWidth = 1.1;
+          ctx.beginPath();
+          ctx.moveTo(-s, -s * 0.32);
+          ctx.lineTo(s * 0.85, -s * 0.44);
+          ctx.lineTo(s, s * 0.28);
+          ctx.lineTo(-s * 0.72, s * 0.42);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          break;
+        }
+        case 'toriiShard': {
+          const s = p.size;
+          ctx.fillStyle = p.color;
+          ctx.strokeStyle = '#3f070e';
+          ctx.lineWidth = 1.1;
+          ctx.fillRect(-s * 0.9, -s * 0.35, s * 1.8, s * 0.7);
+          ctx.strokeRect(-s * 0.9, -s * 0.35, s * 1.8, s * 0.7);
+          ctx.fillStyle = p.secondaryColor;
+          ctx.fillRect(-s * 0.6, -s * 0.1, s * 1.2, s * 0.2);
+          break;
+        }
+        case 'talisman': {
+          // Classic Hakurei red-on-white ofuda paper charm
+          const s = p.size;
+          ctx.fillStyle = '#fffaf5';
+          ctx.strokeStyle = '#b91c2c';
+          ctx.lineWidth = 1;
+          ctx.fillRect(-s * 0.45, -s * 0.85, s * 0.9, s * 1.7);
+          ctx.strokeRect(-s * 0.45, -s * 0.85, s * 0.9, s * 1.7);
+          ctx.fillStyle = '#dc2626';
+          ctx.fillRect(-s * 0.14, -s * 0.55, s * 0.28, s * 1.1);
+          break;
+        }
+        case 'frostRing': {
+          const prog = 1 - alpha;
+          const r = p.size * (0.8 + prog * 3.8);
+          ctx.strokeStyle = p.color;
+          ctx.lineWidth = Math.max(1.2, 3.4 * alpha);
+          ctx.beginPath();
+          for (let k = 0; k < 6; k++) {
+            const a = (k * Math.PI) / 3;
+            const px = Math.cos(a) * r;
+            const py = Math.sin(a) * r;
+            if (k === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.stroke();
+          break;
+        }
         default: {
           const s = p.size;
           ctx.fillStyle = p.color;
@@ -2528,6 +2953,145 @@ export class FlappyRenderer {
       ctx.fillText(ft.text, 0, 0);
       ctx.restore();
     }
+  }
+
+  private drawFrostVignette(
+    ctx: CanvasRenderingContext2D,
+    freezeTimer: number,
+    elapsed: number,
+  ): void {
+    const total = PHYSICS.CIRNO_FREEZE_DURATION;
+    const sinceStart = total - freezeTimer;
+    let alpha = 1;
+    if (sinceStart < 0.16) alpha = sinceStart / 0.16;
+    else if (freezeTimer < 0.35) alpha = freezeTimer / 0.35;
+    alpha = clamp(alpha, 0, 1);
+
+    const pulse = 0.88 + 0.12 * Math.sin(elapsed * 9);
+
+    ctx.save();
+    // Subtle cool sub-zero atmospheric glaze
+    ctx.fillStyle = `rgba(125, 211, 252, ${0.11 * alpha})`;
+    ctx.fillRect(0, 0, STAGE_WIDTH, STAGE_HEIGHT);
+
+    // Frosty icy vignette along all four edges
+    const edgeThickness = 34;
+    const topGrad = ctx.createLinearGradient(0, 0, 0, edgeThickness);
+    topGrad.addColorStop(0, `rgba(186, 230, 253, ${0.52 * alpha * pulse})`);
+    topGrad.addColorStop(1, 'rgba(186, 230, 253, 0)');
+    ctx.fillStyle = topGrad;
+    ctx.fillRect(0, 0, STAGE_WIDTH, edgeThickness);
+
+    const botGrad = ctx.createLinearGradient(0, STAGE_HEIGHT, 0, STAGE_HEIGHT - edgeThickness);
+    botGrad.addColorStop(0, `rgba(186, 230, 253, ${0.46 * alpha * pulse})`);
+    botGrad.addColorStop(1, 'rgba(186, 230, 253, 0)');
+    ctx.fillStyle = botGrad;
+    ctx.fillRect(0, STAGE_HEIGHT - edgeThickness, STAGE_WIDTH, edgeThickness);
+
+    const leftGrad = ctx.createLinearGradient(0, 0, edgeThickness, 0);
+    leftGrad.addColorStop(0, `rgba(186, 230, 253, ${0.5 * alpha * pulse})`);
+    leftGrad.addColorStop(1, 'rgba(186, 230, 253, 0)');
+    ctx.fillStyle = leftGrad;
+    ctx.fillRect(0, 0, edgeThickness, STAGE_HEIGHT);
+
+    const rightGrad = ctx.createLinearGradient(STAGE_WIDTH, 0, STAGE_WIDTH - edgeThickness, 0);
+    rightGrad.addColorStop(0, `rgba(186, 230, 253, ${0.5 * alpha * pulse})`);
+    rightGrad.addColorStop(1, 'rgba(186, 230, 253, 0)');
+    ctx.fillStyle = rightGrad;
+    ctx.fillRect(STAGE_WIDTH - edgeThickness, 0, edgeThickness, STAGE_HEIGHT);
+
+    // Crisp luminous icy inner frame
+    ctx.strokeStyle = `rgba(224, 242, 254, ${0.78 * alpha * pulse})`;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(2.5, 2.5, STAGE_WIDTH - 5, STAGE_HEIGHT - 5);
+
+    // Geometric crystalline ice-prism clusters at all 4 corners
+    const corners: Array<[number, number, number, number]> = [
+      [14, 14, 1, 1],
+      [STAGE_WIDTH - 14, 14, -1, 1],
+      [14, STAGE_HEIGHT - 14, 1, -1],
+      [STAGE_WIDTH - 14, STAGE_HEIGHT - 14, -1, -1],
+    ];
+    for (let c = 0; c < corners.length; c++) {
+      const [cx, cy, sx, sy] = corners[c];
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(sx, sy);
+      ctx.globalAlpha = 0.85 * alpha;
+
+      // Primary ice spikes radiating inward from corner
+      const spikes = [
+        { ang: 0.22, len: 34, w: 6 },
+        { ang: 0.78, len: 42, w: 7.5 },
+        { ang: 1.32, len: 32, w: 5.5 },
+      ];
+      for (let s = 0; s < spikes.length; s++) {
+        const sp = spikes[s];
+        ctx.save();
+        ctx.rotate(sp.ang);
+        ctx.fillStyle = s === 1 ? 'rgba(224, 242, 254, 0.86)' : 'rgba(125, 211, 252, 0.78)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(sp.len * 0.45, -sp.w * 0.5);
+        ctx.lineTo(sp.len, 0);
+        ctx.lineTo(sp.len * 0.45, sp.w * 0.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  private drawSpellBanner(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    timer: number,
+    accentColor: string,
+  ): void {
+    const total = 1.55;
+    const sinceStart = total - timer;
+    let alpha = 1;
+    if (sinceStart < 0.16) alpha = sinceStart / 0.16;
+    else if (timer < 0.35) alpha = timer / 0.35;
+    alpha = clamp(alpha, 0, 1);
+
+    const slideX = sinceStart < 0.18 ? (1 - sinceStart / 0.18) * 34 : 0;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    const y = 122;
+
+    const bgGrad = ctx.createLinearGradient(56, y, STAGE_WIDTH - 56, y);
+    bgGrad.addColorStop(0, 'rgba(16, 10, 32, 0)');
+    bgGrad.addColorStop(0.2, 'rgba(22, 11, 40, 0.84)');
+    bgGrad.addColorStop(0.8, 'rgba(22, 11, 40, 0.84)');
+    bgGrad.addColorStop(1, 'rgba(16, 10, 32, 0)');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(52, y - 18, STAGE_WIDTH - 104, 36);
+
+    ctx.strokeStyle = accentColor;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(86, y - 18);
+    ctx.lineTo(STAGE_WIDTH - 86, y - 18);
+    ctx.moveTo(86, y + 18);
+    ctx.lineTo(STAGE_WIDTH - 86, y + 18);
+    ctx.stroke();
+
+    ctx.font = '900 16px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = accentColor;
+    ctx.shadowBlur = 12;
+    ctx.fillText(`✦ ${text} ✦`, STAGE_WIDTH * 0.5 + slideX, y);
+    ctx.restore();
   }
 
   private drawPhaseBanner(ctx: CanvasRenderingContext2D, text: string, timer: number): void {

@@ -296,6 +296,239 @@ export class FlappyAudio {
     });
   }
 
+  public playGraze(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+
+    // 1. Crisp Touhou high-tech spark tick ("tzk!")
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.getNoiseBuffer(ctx);
+    const hpf = ctx.createBiquadFilter();
+    hpf.type = 'highpass';
+    hpf.frequency.setValueAtTime(3600, now);
+
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.001, now);
+    nGain.gain.linearRampToValueAtTime(0.11, now + 0.004);
+    nGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.032);
+
+    noise.connect(hpf);
+    hpf.connect(nGain);
+    nGain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.04);
+
+    // 2. Electric high-frequency graze ping
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(2650, now);
+    osc.frequency.exponentialRampToValueAtTime(4500, now + 0.038);
+
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.075, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.055);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.065);
+  }
+
+  public playSpellReady(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const notes = [1568.0, 2349.32];
+    notes.forEach((freq, i) => {
+      const t = now + i * 0.065;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.07, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.24);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.26);
+    });
+  }
+
+  public playAyaDash(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+
+    // 1. High-speed gale wind burst
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.getNoiseBuffer(ctx);
+    const bpf = ctx.createBiquadFilter();
+    bpf.type = 'bandpass';
+    bpf.Q.setValueAtTime(1.2, now);
+    bpf.frequency.setValueAtTime(600, now);
+    bpf.frequency.exponentialRampToValueAtTime(3400, now + 0.14);
+    bpf.frequency.exponentialRampToValueAtTime(900, now + 0.34);
+
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.001, now);
+    nGain.gain.linearRampToValueAtTime(0.22, now + 0.03);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+    noise.connect(bpf);
+    bpf.connect(nGain);
+    nGain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.36);
+
+    // 2. Tengu sonic sweep
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(320, now);
+    osc.frequency.exponentialRampToValueAtTime(1280, now + 0.12);
+    osc.frequency.exponentialRampToValueAtTime(680, now + 0.28);
+
+    const lpf = ctx.createBiquadFilter();
+    lpf.type = 'lowpass';
+    lpf.frequency.setValueAtTime(2200, now);
+
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.075, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+
+    osc.connect(lpf);
+    lpf.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.32);
+  }
+
+  public playReimuBarrier(isDeathbomb: boolean): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+
+    // 1. Resonant spiritual impact wave
+    const sub = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(isDeathbomb ? 240 : 280, now);
+    sub.frequency.exponentialRampToValueAtTime(72, now + 0.32);
+    subGain.gain.setValueAtTime(0.001, now);
+    subGain.gain.linearRampToValueAtTime(isDeathbomb ? 0.22 : 0.16, now + 0.015);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + 0.34);
+    sub.connect(subGain);
+    subGain.connect(ctx.destination);
+    sub.start(now);
+    sub.stop(now + 0.36);
+
+    // 2. Sacred shrine barrier harmonic bells
+    const freqs = [523.25, 783.99, 1046.5, 1567.98];
+    freqs.forEach((f, idx) => {
+      const t = now + idx * 0.032;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = idx % 2 === 0 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(f, t);
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.08, t + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.42);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.45);
+    });
+  }
+
+  public playCirnoFreeze(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+
+    // 1. Crystalline ice chime arpeggio
+    const freqs = [2093.0, 2637.0, 3135.96, 1760.0, 2349.32];
+    freqs.forEach((f, idx) => {
+      const t = now + idx * 0.04;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.985, t + 0.36);
+
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.068, t + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.4);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.42);
+    });
+
+    // 2. Time-slow sub-zero shimmer sweep
+    const sweep = ctx.createOscillator();
+    const sGain = ctx.createGain();
+    sweep.type = 'triangle';
+    sweep.frequency.setValueAtTime(880, now);
+    sweep.frequency.exponentialRampToValueAtTime(220, now + 0.42);
+    sGain.gain.setValueAtTime(0.001, now);
+    sGain.gain.linearRampToValueAtTime(0.09, now + 0.025);
+    sGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.44);
+    sweep.connect(sGain);
+    sGain.connect(ctx.destination);
+    sweep.start(now);
+    sweep.stop(now + 0.46);
+  }
+
+  public playShatter(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+
+    // Crisp splintering burst
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.getNoiseBuffer(ctx);
+    const bpf = ctx.createBiquadFilter();
+    bpf.type = 'bandpass';
+    bpf.Q.setValueAtTime(1.4, now);
+    bpf.frequency.setValueAtTime(1900, now);
+    bpf.frequency.exponentialRampToValueAtTime(480, now + 0.14);
+
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.18, now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+
+    noise.connect(bpf);
+    bpf.connect(nGain);
+    nGain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.18);
+
+    // Bright reward pop
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(980, now);
+    osc.frequency.exponentialRampToValueAtTime(1568, now + 0.09);
+    gain.gain.setValueAtTime(0.08, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.12);
+  }
+
   public destroy(): void {
     this.destroyed = true;
     if (this.unsubscribeMute) {

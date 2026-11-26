@@ -178,6 +178,26 @@ export const FLAPPY_COVER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox
     <text x="0.3" y="3.5" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="900" fill="#ffffff">P</text>
   </g>
 
+  <!-- Glowing Incident Danmaku Orbs & Electric Graze Sparks -->
+  <g filter="url(#flappy-glow)">
+    <g transform="translate(178, 66)">
+      <circle cx="0" cy="0" r="11" fill="#f43f5e" opacity="0.3"/>
+      <circle cx="0" cy="0" r="6.4" fill="#f43f5e" stroke="#4c0519" stroke-width="0.9"/>
+      <circle cx="0" cy="0" r="4.1" fill="#ffffff"/>
+    </g>
+    <g transform="translate(274, 114)">
+      <circle cx="0" cy="0" r="10.5" fill="#facc15" opacity="0.32"/>
+      <circle cx="0" cy="0" r="6" fill="#facc15" stroke="#713f12" stroke-width="0.9"/>
+      <circle cx="0" cy="0" r="3.8" fill="#ffffff"/>
+    </g>
+    <!-- Crisp Electric Graze Sparks near Aya -->
+    <g stroke="#fff9c4" stroke-width="1.4" stroke-linecap="round" opacity="0.92">
+      <line x1="156" y1="78" x2="164" y2="73"/>
+      <line x1="154" y1="72" x2="160" y2="65"/>
+      <line x1="160" y1="84" x2="167" y2="83"/>
+    </g>
+  </g>
+
   <!-- Crisp Wind-Gust Air Ring, Wind Ribbons & Maple Trail behind Aya -->
   <g>
     <ellipse cx="116" cy="112" rx="14" ry="5" transform="rotate(-12 116 112)" fill="none" stroke="#fffdf4" stroke-width="1.6" opacity="0.8"/>

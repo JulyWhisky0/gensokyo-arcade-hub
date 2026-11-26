@@ -6,6 +6,9 @@ export interface CharacterConfig {
   title: string;
   englishName: string;
   tagline: string;
+  skillName: string;
+  skillCardTitle: string;
+  skillIcon: string;
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;
@@ -18,7 +21,10 @@ export const CHARACTERS: readonly CharacterConfig[] = [
     name: '射命丸文',
     title: '传统幻想鸦天狗',
     englishName: 'Aya Shameimaru',
-    tagline: '疾风乌翼 · 红叶尾迹',
+    tagline: '幻想风靡·冲刺破柱',
+    skillName: '幻想风靡',
+    skillCardTitle: '疾风「幻想风靡」',
+    skillIcon: '✦',
     primaryColor: '#d9383a',
     secondaryColor: '#1e2230',
     accentColor: '#f5b841',
@@ -29,7 +35,10 @@ export const CHARACTERS: readonly CharacterConfig[] = [
     name: '博丽灵梦',
     title: '乐园的巫女',
     englishName: 'Reimu Hakurei',
-    tagline: '阴阳玉随行 · 樱吹雪',
+    tagline: '小判定·决死结界',
+    skillName: '决死结界',
+    skillCardTitle: '结界「阴阳玉」',
+    skillIcon: '☯',
     primaryColor: '#e03e52',
     secondaryColor: '#fff6f6',
     accentColor: '#f7c95c',
@@ -40,7 +49,10 @@ export const CHARACTERS: readonly CharacterConfig[] = [
     name: '琪露诺',
     title: '冰之妖精',
     englishName: 'Cirno',
-    tagline: '冰晶六翼 · 细雪结晶',
+    tagline: '完美冻结·慢动作',
+    skillName: '完美冻结',
+    skillCardTitle: '冰符「完美冻结」',
+    skillIcon: '❄',
     primaryColor: '#4cc9f0',
     secondaryColor: '#2563eb',
     accentColor: '#d8f6ff',
@@ -68,6 +80,37 @@ export interface PipeObstacle {
   passed: boolean;
   style: ObstacleStyle;
   lanternPhase: number;
+  grazedTop: boolean;
+  grazedBottom: boolean;
+  topShattered: boolean;
+  bottomShattered: boolean;
+}
+
+export type DanmakuColor = 'scarlet' | 'gold';
+
+export interface DanmakuOrb {
+  id: number;
+  x: number;
+  prevX: number;
+  y: number;
+  prevY: number;
+  baseY: number;
+  vx: number;
+  ampY: number;
+  freqY: number;
+  phase: number;
+  radius: number;
+  color: DanmakuColor;
+  grazed: boolean;
+  shattered: boolean;
+}
+
+export interface PlayerAfterimage {
+  x: number;
+  y: number;
+  rotation: number;
+  alpha: number;
+  character: CharacterId;
 }
 
 export interface StarCollectible {
@@ -95,7 +138,12 @@ export type ParticleKind =
   | 'airRing'
   | 'starBurst'
   | 'wind'
-  | 'windRibbon';
+  | 'windRibbon'
+  | 'grazeSpark'
+  | 'bambooShard'
+  | 'toriiShard'
+  | 'talisman'
+  | 'frostRing';
 
 export interface Particle {
   x: number;
@@ -224,6 +272,8 @@ export interface PlayerState {
   blinkTimer: number;
   blinkDuration: number;
   determinedTimer: number;
+  grazeFlash: number;
+  invincibleTimer: number;
 }
 
 export interface RenderState {
@@ -232,6 +282,8 @@ export interface RenderState {
   player: PlayerState;
   pipes: PipeObstacle[];
   stars: StarCollectible[];
+  danmaku: DanmakuOrb[];
+  afterimages: PlayerAfterimage[];
   particles: Particle[];
   particleCount: number;
   floatingTexts: FloatingText[];
@@ -239,6 +291,13 @@ export interface RenderState {
   bestScore: number;
   pipesCleared: number;
   starsCollected: number;
+  grazeCount: number;
+  spiritGauge: number; // 0..100
+  ayaDashTimer: number;
+  cirnoFreezeTimer: number;
+  reimuBarrierTimer: number;
+  reimuBarrierX: number;
+  reimuBarrierY: number;
   skyProgress: number; // 0 = Dawn, 1 = Golden Sunset, 2 = Scarlet Mist Night
   scrollDistance: number;
   prevScrollDistance: number;
@@ -250,6 +309,9 @@ export interface RenderState {
   shakeIntensity: number;
   phaseBannerText: string;
   phaseBannerTimer: number;
+  spellBannerText: string;
+  spellBannerTimer: number;
+  spellBannerColor: string;
 }
 
 // Wider scenic Gensokyo stage for generous horizontal sightline & parallax vista
@@ -258,7 +320,7 @@ export const STAGE_HEIGHT = 640;
 export const GROUND_HEIGHT = 86;
 export const PLAYABLE_HEIGHT = STAGE_HEIGHT - GROUND_HEIGHT;
 
-export const MAX_PARTICLES = 160;
+export const MAX_PARTICLES = 240;
 
 export const PHYSICS = {
   FIXED_DT: 1 / 120,
@@ -267,6 +329,19 @@ export const PHYSICS = {
   PLAYER_X: 138,
   PLAYER_START_Y: 264,
   HITBOX_RADIUS: 12.2, // forgiving slightly-inset circular hitbox
+  REIMU_HITBOX_SCALE: 0.85,
+  REIMU_MAGNET_RADIUS: 145,
+  REIMU_INVINCIBLE_DURATION: 0.9,
+  REIMU_BARRIER_VISUAL_DURATION: 0.65,
+  AYA_DASH_DURATION: 0.45,
+  AYA_DASH_GRACE_INVINCIBLE: 0.22,
+  AYA_DASH_SPEED_MULT: 2.85,
+  CIRNO_FREEZE_DURATION: 2.5,
+  CIRNO_TIME_SCALE: 0.45,
+  GRAZE_HALO: 20,
+  GRAZE_SPIRIT: 18,
+  PIPE_SPIRIT: 12,
+  STAR_SPIRIT: 18,
   GRAVITY: 1410,
   FLAP_VELOCITY: -430,
   MAX_FALL_SPEED: 555,
