@@ -1,20 +1,29 @@
 import type { GameInstance, GameMountContext } from '../../types/game';
 import { SuikaAudio } from './audio';
 import { SuikaPhysics, type OrbBody } from './physics';
-import { SuikaRenderer, renderOrbIcon } from './renderer';
+import { SuikaRenderer, renderOrbIcon, renderSupportPortrait } from './renderer';
 import { SUIKA_STYLES } from './styles';
 import {
   BOARD_HEIGHT,
   BOARD_WIDTH,
   DROP_COOLDOWN_MS,
   DROP_EARLY_UNLOCK_MS,
+  FEVER_DURATION,
+  GAP_HOLD_COOLDOWN_DROPS,
   MAX_TIER,
   ORB_TIERS,
   SPAWN_Y,
+  SPIRIT_MAX_VALUE,
+  SPIRIT_PER_CHARGE,
+  SUPPORT_SPELLS,
+  TIME_STOP_DURATION,
+  TIME_STOP_RAPID_DROPS,
   pickNextSpawnTier,
+  type SupportSpellDef,
+  type SupportSpellId,
 } from './tiers';
 
-type GamePhase = 'ready' | 'playing' | 'paused' | 'gameover';
+type GamePhase = 'playing' | 'paused' | 'gameover';
 
 const KEY_INITIAL_SPEED = 120;
 const KEY_MAX_SPEED = 440;
@@ -29,7 +38,8 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   const audio = new SuikaAudio(ctx.isMuted());
 
   let destroyed = false;
-  let phase: GamePhase = 'ready';
+  // Start directly ready-to-drop without a blocking text modal!
+  let phase: GamePhase = 'playing';
   let score = 0;
   let bestScore = Math.max(0, ctx.getBestScore());
   let isNewRecord = false;
@@ -45,14 +55,27 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   let timeSinceDropMs = DROP_COOLDOWN_MS;
   let dropBufferMs = 0;
   let lastDroppedOrb: OrbBody | null = null;
-  let heldPopProgress = 1;
+  let heldPopProgress = 0;
   let nearDangerFactor = 0;
+  let firstDropHintAlpha = 1;
+
+  // --- Touhou Gameplay Mechanics State ---
+  let spiritValue = 0; // 0..200 (2 charges max)
+  let selectedSpell: SupportSpellId = 'reimu';
+  let timeStopTimer = 0;
+  let timeStopRapidDropsLeft = 0;
+  let timeStopLastTickSec = 0;
+  let yukariPickMode = false;
+  let yukariHoveredOrbId: number | null = null;
+  let feverTimer = 0;
+  let gapStashTier: number | null = null;
+  let gapCooldownDrops = 0;
 
   let elapsedTime = 0;
   let lastFrameTime = 0;
   let rafId = 0;
 
-  // Smooth input tracking (zero-lag pointer + accel/decel keyboard)
+  // Smooth input tracking
   let keyLeft = false;
   let keyRight = false;
   let keyVelX = 0;
@@ -85,42 +108,14 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
 
   const ctx2d = canvas.getContext('2d');
 
-  // --- Overlays ---
-  // 1. Start Overlay
-  const startOverlay = document.createElement('div');
-  startOverlay.className = 'suika-overlay visible';
-  startOverlay.innerHTML = `
-    <div class="suika-modal">
-      <div class="suika-modal-badge">博丽神社 · 翠香祭</div>
-      <h2 class="suika-modal-title">幻想乡合成大西瓜</h2>
-      <div class="suika-trophy-row">
-        <canvas class="suika-trophy-canvas" data-role="start-icon"></canvas>
-        <div class="suika-trophy-text">
-          <div class="suika-trophy-label">终极合成目标 · TIER 11</div>
-          <div class="suika-trophy-name">伊吹萃香（大西瓜！）</div>
-          <div class="suika-trophy-epithet">从毛玉一路合成至萃香鬼王</div>
-        </div>
-      </div>
-      <p class="suika-modal-sub">
-        鼠标或触控瞄准后投放角色球，相同角色相遇即可进化升级。<br/>
-        注意不要让角色球长时间超过顶部结界警戒线！
-      </p>
-      <div class="suika-btn-row">
-        <button type="button" class="suika-btn suika-btn-primary" data-action="start">开始合成</button>
-      </div>
-    </div>
-  `;
-  canvasShell.appendChild(startOverlay);
-
-  // 2. Pause Overlay (preserves .suika-overlay.visible + [data-action="resume"] for top-bar sync)
+  // --- Overlays (NO heavy startOverlay! Preserves Pause contract .suika-overlay.visible + [data-action="resume"]) ---
   const pauseOverlay = document.createElement('div');
   pauseOverlay.className = 'suika-overlay';
   pauseOverlay.innerHTML = `
     <div class="suika-modal">
       <div class="suika-modal-badge">时间静止</div>
       <h2 class="suika-modal-title">游戏已暂停</h2>
-      <p class="suika-modal-sub">十六夜咲夜为你暂停了幻想乡的时间，随时可以继续。</p>
-      <div class="suika-btn-row">
+      <div class="suika-btn-row" style="margin-top: 16px;">
         <button type="button" class="suika-btn suika-btn-primary" data-action="resume">继续游戏</button>
         <button type="button" class="suika-btn suika-btn-secondary" data-action="restart">重新开始</button>
       </div>
@@ -128,7 +123,6 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   `;
   canvasShell.appendChild(pauseOverlay);
 
-  // 3. Game Over Overlay
   const gameOverOverlay = document.createElement('div');
   gameOverOverlay.className = 'suika-overlay';
   gameOverOverlay.innerHTML = `
@@ -138,14 +132,13 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
       <div class="suika-trophy-row">
         <canvas class="suika-trophy-canvas" data-role="over-icon"></canvas>
         <div class="suika-trophy-text">
-          <div class="suika-trophy-label">本局最高合成</div>
-          <div class="suika-trophy-name" data-role="over-tier-name">毛玉</div>
-          <div class="suika-trophy-epithet" data-role="over-tier-title">幻想乡软萌毛球</div>
+          <div class="suika-trophy-label">最高合成</div>
+          <div class="suika-trophy-name" data-role="over-tier-name">白玉果 · 毛玉</div>
         </div>
       </div>
       <div class="suika-score-grid">
         <div class="suika-score-tile">
-          <div class="suika-score-tile-label">本局得分</div>
+          <div class="suika-score-tile-label">得分</div>
           <div class="suika-score-tile-val" data-role="over-score">0</div>
         </div>
         <div class="suika-score-tile">
@@ -153,7 +146,6 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
           <div class="suika-score-tile-val" data-role="over-best">0</div>
         </div>
       </div>
-      <p class="suika-modal-sub" data-role="over-stats">总合成 0 次 · 最高连击 0x</p>
       <div class="suika-btn-row">
         <button type="button" class="suika-btn suika-btn-primary" data-action="restart">再来一局</button>
         <button type="button" class="suika-btn suika-btn-secondary" data-action="menu">返回大厅</button>
@@ -162,135 +154,216 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   `;
   canvasShell.appendChild(gameOverOverlay);
 
-  // --- Sidebar ---
+  // --- Ultra-Clean 3-Module Sidebar ---
   const sidebar = document.createElement('aside');
   sidebar.className = 'suika-sidebar';
   layout.appendChild(sidebar);
 
-  // Next orb preview card
-  const nextCard = document.createElement('div');
-  nextCard.className = 'suika-card suika-next-card';
-  nextCard.innerHTML = `
-    <div class="suika-card-header">
-      <span>下一个角色</span>
-      <span>NEXT</span>
-    </div>
-    <div class="suika-next-wrap">
-      <div class="suika-next-canvas-box">
-        <canvas data-role="next-icon"></canvas>
+  // Module 1: [Next + Gap Hold]
+  const slotsCard = document.createElement('div');
+  slotsCard.className = 'suika-card suika-slots-card';
+  slotsCard.innerHTML = `
+    <div class="suika-slots-row">
+      <div class="suika-slot-box" data-role="next-slot" title="下一个布偶">
+        <span class="suika-slot-tag">NEXT</span>
+        <canvas class="suika-slot-canvas" data-role="next-icon"></canvas>
       </div>
-      <div class="suika-next-info">
-        <div class="suika-next-name" data-role="next-name">毛玉</div>
-        <div class="suika-next-sub" data-role="next-title">幻想乡软萌毛球</div>
-      </div>
-    </div>
-  `;
-  sidebar.appendChild(nextCard);
-
-  // Compact stats card
-  const statsCard = document.createElement('div');
-  statsCard.className = 'suika-card suika-stats-card';
-  statsCard.innerHTML = `
-    <div class="suika-mini-stats">
-      <div class="suika-stat-box">
-        <div class="suika-stat-label">当前分数</div>
-        <div class="suika-stat-val" data-role="hud-score">0</div>
-      </div>
-      <div class="suika-stat-box">
-        <div class="suika-stat-label">最高连击</div>
-        <div class="suika-stat-val accent" data-role="hud-combo">0x</div>
-      </div>
+      <button type="button" class="suika-slot-box suika-gap-slot" data-action="gap-hold" title="隙间暂存 (Shift) · 每投放2次充能">
+        <span class="suika-slot-tag gap">隙间</span>
+        <canvas class="suika-slot-canvas" data-role="gap-icon"></canvas>
+        <span class="suika-gap-empty" data-role="gap-empty">👁</span>
+        <span class="suika-gap-badge" data-role="gap-badge">Shift</span>
+      </button>
     </div>
   `;
-  sidebar.appendChild(statsCard);
+  sidebar.appendChild(slotsCard);
 
-  // Evolution chain card (all 11 Touhou tiers)
+  // Module 2: [Spirit Gauge + 4-Icon Support Selector + Spell Cast Button]
+  const spellCard = document.createElement('div');
+  spellCard.className = 'suika-card suika-spell-card';
+  spellCard.innerHTML = `
+    <div class="suika-spell-top">
+      <span class="suika-spell-heading">P 灵力符卡</span>
+      <div class="suika-charge-pips" data-role="charge-pips">
+        <span class="suika-pip" data-pip="0"></span>
+        <span class="suika-pip" data-pip="1"></span>
+      </div>
+    </div>
+    <div class="suika-gauge-track">
+      <div class="suika-gauge-seg"><div class="suika-gauge-fill" data-fill="0"></div></div>
+      <div class="suika-gauge-seg"><div class="suika-gauge-fill" data-fill="1"></div></div>
+    </div>
+    <div class="suika-support-picker" data-role="support-picker"></div>
+    <button type="button" class="suika-cast-btn" data-action="cast-spell">
+      <span class="suika-cast-name" data-role="cast-name">灵符「梦想封印」</span>
+      <span class="suika-cast-key" data-role="cast-key">E / 右键</span>
+    </button>
+  `;
+  sidebar.appendChild(spellCard);
+
+  // Module 3: [Icon-Only Fumo Fruit Evolution Strip]
   const evoCard = document.createElement('div');
   evoCard.className = 'suika-card suika-evo-card';
   evoCard.innerHTML = `
     <div class="suika-card-header">
-      <span>进化图鉴 (11阶)</span>
+      <span>布偶进化</span>
       <span>毛玉 → 🍉</span>
     </div>
-    <div class="suika-evo-list" data-role="evo-list"></div>
+    <div class="suika-evo-strip" data-role="evo-strip"></div>
   `;
   sidebar.appendChild(evoCard);
-
-  const controlsHint = document.createElement('div');
-  controlsHint.className = 'suika-controls-hint';
-  controlsHint.innerHTML = `
-    <span class="suika-kbd">点击/拖放</span> 瞄准投放 ·
-    <span class="suika-kbd">A/D</span><span class="suika-kbd">←/→</span> 移动 ·
-    <span class="suika-kbd">空格</span> 投放
-  `;
-  sidebar.appendChild(controlsHint);
 
   ctx.container.appendChild(root);
 
   // --- Query UI Elements ---
-  const startIconCanvas = startOverlay.querySelector<HTMLCanvasElement>('[data-role="start-icon"]');
-  const nextIconCanvas = nextCard.querySelector<HTMLCanvasElement>('[data-role="next-icon"]');
-  const nextNameEl = nextCard.querySelector<HTMLElement>('[data-role="next-name"]');
-  const nextTitleEl = nextCard.querySelector<HTMLElement>('[data-role="next-title"]');
-  const hudScoreEl = statsCard.querySelector<HTMLElement>('[data-role="hud-score"]');
-  const hudComboEl = statsCard.querySelector<HTMLElement>('[data-role="hud-combo"]');
-  const evoListEl = evoCard.querySelector<HTMLElement>('[data-role="evo-list"]');
+  const nextSlotEl = slotsCard.querySelector<HTMLElement>('[data-role="next-slot"]');
+  const nextIconCanvas = slotsCard.querySelector<HTMLCanvasElement>('[data-role="next-icon"]');
+  const gapSlotBtn = slotsCard.querySelector<HTMLButtonElement>('[data-action="gap-hold"]');
+  const gapIconCanvas = slotsCard.querySelector<HTMLCanvasElement>('[data-role="gap-icon"]');
+  const gapEmptyEl = slotsCard.querySelector<HTMLElement>('[data-role="gap-empty"]');
+  const gapBadgeEl = slotsCard.querySelector<HTMLElement>('[data-role="gap-badge"]');
+
+  const pipEls = [
+    spellCard.querySelector<HTMLElement>('[data-pip="0"]'),
+    spellCard.querySelector<HTMLElement>('[data-pip="1"]'),
+  ];
+  const fillEls = [
+    spellCard.querySelector<HTMLElement>('[data-fill="0"]'),
+    spellCard.querySelector<HTMLElement>('[data-fill="1"]'),
+  ];
+  const supportPickerEl = spellCard.querySelector<HTMLElement>('[data-role="support-picker"]');
+  const castBtnEl = spellCard.querySelector<HTMLButtonElement>('[data-action="cast-spell"]');
+  const castNameEl = spellCard.querySelector<HTMLElement>('[data-role="cast-name"]');
+  const castKeyEl = spellCard.querySelector<HTMLElement>('[data-role="cast-key"]');
+
+  const evoStripEl = evoCard.querySelector<HTMLElement>('[data-role="evo-strip"]');
 
   const overBadgeEl = gameOverOverlay.querySelector<HTMLElement>('[data-role="over-badge"]');
   const overTitleEl = gameOverOverlay.querySelector<HTMLElement>('[data-role="over-title"]');
   const overIconCanvas = gameOverOverlay.querySelector<HTMLCanvasElement>('[data-role="over-icon"]');
   const overTierNameEl = gameOverOverlay.querySelector<HTMLElement>('[data-role="over-tier-name"]');
-  const overTierTitleEl = gameOverOverlay.querySelector<HTMLElement>('[data-role="over-tier-title"]');
   const overScoreEl = gameOverOverlay.querySelector<HTMLElement>('[data-role="over-score"]');
   const overBestEl = gameOverOverlay.querySelector<HTMLElement>('[data-role="over-best"]');
-  const overStatsEl = gameOverOverlay.querySelector<HTMLElement>('[data-role="over-stats"]');
 
-  // Render static showcase icon on start modal
-  if (startIconCanvas) {
-    renderOrbIcon(startIconCanvas, MAX_TIER, 52);
+  // Build 4-icon Support Character Selector
+  const supportBtns = new Map<SupportSpellId, HTMLButtonElement>();
+  if (supportPickerEl) {
+    for (const sp of SUPPORT_SPELLS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'suika-support-btn';
+      btn.dataset.action = 'select-support';
+      btn.dataset.spell = sp.id;
+      btn.title = `${sp.charName} · ${sp.spellName}\n${sp.shortDesc}`;
+
+      const icon = document.createElement('canvas');
+      icon.className = 'suika-support-canvas';
+      renderSupportPortrait(icon, sp.id, 34);
+      btn.appendChild(icon);
+
+      supportPickerEl.appendChild(btn);
+      supportBtns.set(sp.id, btn);
+    }
   }
 
-  // Build Evolution Chain items with crisp high-DPI Touhou chibi portraits
+  // Build Icon-Only Fumo Fruit Evolution Strip (zero text clutter, rich hover tooltip!)
   const evoItems: HTMLElement[] = [];
-  if (evoListEl) {
+  if (evoStripEl) {
     for (let t = 0; t < ORB_TIERS.length; t++) {
       const def = ORB_TIERS[t];
       const item = document.createElement('div');
-      item.className = `suika-evo-item${t === MAX_TIER ? ' tier-suika' : ''}`;
-      item.title = `${t + 1}. ${def.name} — ${def.title} (+${def.score}分)`;
+      item.className = `suika-evo-chip${t === MAX_TIER ? ' tier-suika' : ''}`;
+      item.title = `${t + 1}. ${def.title} (+${def.score}分)`;
 
       const icon = document.createElement('canvas');
       icon.className = 'suika-evo-icon';
-      renderOrbIcon(icon, t, t === MAX_TIER ? 28 : 24);
+      renderOrbIcon(icon, t, t === MAX_TIER ? 34 : 28);
       item.appendChild(icon);
 
-      const meta = document.createElement('div');
-      meta.className = 'suika-evo-meta';
-      const nameSpan = document.createElement('span');
-      nameSpan.className = 'suika-evo-name';
-      nameSpan.textContent = `${t + 1}.${def.shortName}`;
-      const ptsSpan = document.createElement('span');
-      ptsSpan.className = 'suika-evo-pts';
-      ptsSpan.textContent = t === 0 ? '初始球' : `+${def.score}`;
-      meta.appendChild(nameSpan);
-      meta.appendChild(ptsSpan);
-      item.appendChild(meta);
-
-      evoListEl.appendChild(item);
+      evoStripEl.appendChild(item);
       evoItems.push(item);
     }
   }
 
-  // --- UI Sync Helpers ---
+  // --- Helper Lookups & UI Sync ---
+  function getActiveSpellDef(): SupportSpellDef {
+    return SUPPORT_SPELLS.find((s) => s.id === selectedSpell) ?? SUPPORT_SPELLS[0];
+  }
+
+  function getSpellCharges(): number {
+    return Math.floor(spiritValue / SPIRIT_PER_CHARGE);
+  }
+
   function syncNextPreview(): void {
     const def = ORB_TIERS[nextTier];
     if (nextIconCanvas) {
-      renderOrbIcon(nextIconCanvas, nextTier, 48);
-      nextIconCanvas.style.maxWidth = '100%';
-      nextIconCanvas.style.maxHeight = '100%';
+      renderOrbIcon(nextIconCanvas, nextTier, 46);
     }
-    if (nextNameEl) nextNameEl.textContent = def.name;
-    if (nextTitleEl) nextTitleEl.textContent = def.title;
+    if (nextSlotEl) {
+      nextSlotEl.title = `下一个：${def.title}`;
+    }
+  }
+
+  function syncGapHoldUI(): void {
+    if (!gapSlotBtn || !gapIconCanvas || !gapEmptyEl || !gapBadgeEl) return;
+    const ready = gapCooldownDrops === 0 && !yukariPickMode;
+    gapSlotBtn.classList.toggle('ready', ready);
+    gapSlotBtn.classList.toggle('cooldown', gapCooldownDrops > 0);
+    gapSlotBtn.classList.toggle('has-orb', gapStashTier !== null);
+
+    if (gapStashTier !== null) {
+      renderOrbIcon(gapIconCanvas, gapStashTier, 44);
+      gapIconCanvas.style.display = 'block';
+      gapEmptyEl.style.display = 'none';
+      const def = ORB_TIERS[gapStashTier];
+      gapSlotBtn.title = `隙间暂存：${def.title} (${gapCooldownDrops > 0 ? `再投${gapCooldownDrops}次可用` : 'Shift 互换'})`;
+    } else {
+      gapIconCanvas.style.display = 'none';
+      gapEmptyEl.style.display = 'flex';
+      gapSlotBtn.title =
+        gapCooldownDrops > 0
+          ? `隙间冷却中：再投 ${gapCooldownDrops} 次可用`
+          : '隙间暂存 (Shift)：收起当前布偶，每2次投放充能';
+    }
+
+    gapBadgeEl.textContent = gapCooldownDrops > 0 ? `待${gapCooldownDrops}` : 'Shift';
+  }
+
+  function syncSpellUI(): void {
+    const charges = getSpellCharges();
+    const def = getActiveSpellDef();
+
+    const seg0 = Math.min(100, Math.max(0, spiritValue));
+    const seg1 = Math.min(100, Math.max(0, spiritValue - 100));
+    if (fillEls[0]) fillEls[0].style.width = `${seg0}%`;
+    if (fillEls[1]) fillEls[1].style.width = `${seg1}%`;
+
+    if (pipEls[0]) pipEls[0].classList.toggle('filled', charges >= 1);
+    if (pipEls[1]) pipEls[1].classList.toggle('filled', charges >= 2);
+
+    for (const [id, btn] of supportBtns) {
+      btn.classList.toggle('active', id === selectedSpell);
+    }
+
+    if (castBtnEl && castNameEl && castKeyEl) {
+      if (yukariPickMode) {
+        castNameEl.textContent = '点选布偶互换';
+        castKeyEl.textContent = '取消';
+        castBtnEl.classList.add('ready', 'picking');
+        castBtnEl.disabled = false;
+      } else {
+        const canCast = charges >= 1 && phase === 'playing';
+        castNameEl.textContent = def.spellName;
+        castKeyEl.textContent = charges >= 1 ? `×${charges} · E` : '充能中';
+        castBtnEl.classList.toggle('ready', canCast);
+        castBtnEl.classList.remove('picking');
+        castBtnEl.disabled = !canCast;
+        castBtnEl.style.setProperty('--spell-color', def.color);
+      }
+      castBtnEl.title = `${def.charName} · ${def.spellName}\n${def.shortDesc}`;
+    }
+
+    canvas.classList.toggle('yukari-pick', yukariPickMode);
   }
 
   function syncEvolutionChain(): void {
@@ -302,15 +375,13 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   }
 
   function syncScoreHUD(comboLabel?: string): void {
-    if (hudScoreEl) hudScoreEl.textContent = String(score);
-    if (hudComboEl) hudComboEl.textContent = `${physics.maxCombo}x`;
     const tierName = ORB_TIERS[highestTier].shortName;
-    const extra = comboLabel ? `${comboLabel} · ${tierName}` : `最高:${tierName}`;
+    const prefix = feverTimer > 0 ? '百鬼夜行2×' : comboLabel;
+    const extra = prefix ? `${prefix} · ${tierName}` : `最高:${tierName}`;
     ctx.onScoreChange(score, bestScore, extra);
   }
 
   function syncOverlays(): void {
-    startOverlay.classList.toggle('visible', phase === 'ready');
     pauseOverlay.classList.toggle('visible', phase === 'paused');
     gameOverOverlay.classList.toggle('visible', phase === 'gameover');
   }
@@ -327,15 +398,28 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     if (overIconCanvas) {
       renderOrbIcon(overIconCanvas, highestTier, 52);
     }
-    if (overTierNameEl) overTierNameEl.textContent = reached.name;
-    if (overTierTitleEl) overTierTitleEl.textContent = reached.title;
+    if (overTierNameEl) overTierNameEl.textContent = reached.title;
     if (overScoreEl) {
       overScoreEl.innerHTML = `${score}${isNewRecord && score > 0 ? '<span class="suika-new-record">NEW</span>' : ''}`;
     }
     if (overBestEl) overBestEl.textContent = String(bestScore);
-    if (overStatsEl) {
-      overStatsEl.textContent = `总合成 ${physics.totalMerges} 次 · 最高连击 ${physics.maxCombo}x`;
+  }
+
+  function addSpirit(amount: number): void {
+    const prevCharges = getSpellCharges();
+    spiritValue = Math.min(SPIRIT_MAX_VALUE, spiritValue + amount);
+    const nextCharges = getSpellCharges();
+    if (nextCharges > prevCharges) {
+      audio.playSpellReady();
     }
+    syncSpellUI();
+  }
+
+  function spendOneCharge(): boolean {
+    if (spiritValue < SPIRIT_PER_CHARGE) return false;
+    spiritValue = Math.max(0, spiritValue - SPIRIT_PER_CHARGE);
+    syncSpellUI();
+    return true;
   }
 
   // --- Responsive Canvas Fit + High-DPI Offscreen Sprite Cache Sync ---
@@ -368,18 +452,8 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   resizeObserver.observe(stageCol);
   updateCanvasSize();
 
-  // --- Core Actions ---
-  function startGame(): void {
-    audio.unlock();
-    if (phase === 'ready') {
-      phase = 'playing';
-      heldPopProgress = 0;
-      lastFrameTime = performance.now();
-      syncOverlays();
-    }
-  }
-
-  function resetRun(startImmediately: boolean): void {
+  // --- Core Actions & Touhou Mechanics ---
+  function resetRun(): void {
     physics.reset();
     renderer.resetEffects();
     score = 0;
@@ -397,26 +471,180 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     lastDroppedOrb = null;
     heldPopProgress = 0;
     nearDangerFactor = 0;
+    firstDropHintAlpha = 1;
+
+    spiritValue = 0;
+    timeStopTimer = 0;
+    timeStopRapidDropsLeft = 0;
+    timeStopLastTickSec = 0;
+    yukariPickMode = false;
+    yukariHoveredOrbId = null;
+    feverTimer = 0;
+    gapStashTier = null;
+    gapCooldownDrops = 0;
+
     activePointerId = null;
     keyLeft = false;
     keyRight = false;
     keyVelX = 0;
-    phase = startImmediately ? 'playing' : 'ready';
+    phase = 'playing';
     lastFrameTime = performance.now();
 
     syncNextPreview();
+    syncGapHoldUI();
+    syncSpellUI();
     syncEvolutionChain();
     syncScoreHUD();
     syncOverlays();
   }
 
-  function requestDrop(): void {
+  function triggerGapHold(): void {
+    if (phase !== 'playing' || yukariPickMode) return;
+    if (gapCooldownDrops > 0) return;
+    audio.unlock();
+
+    if (gapStashTier === null) {
+      gapStashTier = currentTier;
+      currentTier = nextTier;
+      nextTier = pickNextSpawnTier(dropCount + 1);
+    } else {
+      const prev = currentTier;
+      currentTier = gapStashTier;
+      gapStashTier = prev;
+    }
+
+    gapCooldownDrops = GAP_HOLD_COOLDOWN_DROPS;
+    dropX = physics.clampDropX(dropX, currentTier);
+    heldPopProgress = 0;
+    audio.playGapHold();
+    renderer.spawnGapPortalFX(dropX, SPAWN_Y, 28);
+    syncNextPreview();
+    syncGapHoldUI();
+  }
+
+  function cancelYukariPick(): void {
+    if (!yukariPickMode) return;
+    yukariPickMode = false;
+    yukariHoveredOrbId = null;
+    syncSpellUI();
+    syncGapHoldUI();
+  }
+
+  function triggerActiveSpell(): void {
     if (phase !== 'playing') return;
+    audio.unlock();
+
+    // Pressing Spell / clicking button again cancels Yukari target-pick without spending charge
+    if (yukariPickMode) {
+      cancelYukariPick();
+      return;
+    }
+
+    if (getSpellCharges() < 1) return;
+
+    if (selectedSpell === 'reimu') {
+      const targets = physics.selectSmallestForOfuda(3);
+      if (targets.length === 0) {
+        renderer.spawnFloatingBanner('箱内尚无布偶', undefined, '#ffd6de', BOARD_WIDTH * 0.5, 180, 0.95);
+        return;
+      }
+      spendOneCharge();
+      audio.playReimuOfuda();
+      renderer.spawnReimuOfudaFX(targets, dropX);
+      return;
+    }
+
+    if (selectedSpell === 'sakuya') {
+      if (timeStopTimer > 0.05) return;
+      spendOneCharge();
+      timeStopTimer = TIME_STOP_DURATION;
+      timeStopRapidDropsLeft = TIME_STOP_RAPID_DROPS;
+      timeStopLastTickSec = Math.ceil(TIME_STOP_DURATION);
+      dropCooldownMs = 0;
+      dropBufferMs = 0;
+      audio.playTimeStopStart();
+      renderer.spawnTimeStopStartFX();
+      return;
+    }
+
+    if (selectedSpell === 'yukari') {
+      const hasAnyOrb = physics.orbs.some((o) => !o.sealed);
+      if (!hasAnyOrb) {
+        renderer.spawnFloatingBanner('箱内尚无布偶', undefined, '#e3c7ff', BOARD_WIDTH * 0.5, 180, 0.95);
+        return;
+      }
+      // Enter target-pick mode WITHOUT spending charge yet!
+      yukariPickMode = true;
+      yukariHoveredOrbId = null;
+      activePointerId = null;
+      keyVelX = 0;
+      audio.playGapHold();
+      syncSpellUI();
+      syncGapHoldUI();
+      return;
+    }
+
+    if (selectedSpell === 'suika') {
+      const hasAnyOrb = physics.orbs.some((o) => !o.sealed);
+      if (!hasAnyOrb) {
+        renderer.spawnFloatingBanner('箱内尚无布偶', undefined, '#ffe899', BOARD_WIDTH * 0.5, 180, 0.95);
+        return;
+      }
+      spendOneCharge();
+      physics.triggerSuikaShake();
+      audio.playSuikaSpell();
+      renderer.spawnSuikaSakeRippleFX();
+    }
+  }
+
+  function tryYukariSwapAt(bx: number, by: number): boolean {
+    const target = physics.findOrbAtPoint(bx, by);
+    if (!target) return false;
+    if (!spendOneCharge()) {
+      cancelYukariPick();
+      return false;
+    }
+
+    const result = physics.swapOrbTier(target.id, currentTier);
+    if (result) {
+      const { orb, oldTier } = result;
+      currentTier = oldTier;
+      dropX = physics.clampDropX(dropX, currentTier);
+      heldPopProgress = 0;
+      audio.playGapSwap();
+      renderer.spawnGapPortalFX(orb.x, orb.y, Math.max(30, orb.radius * 1.1));
+      renderer.spawnGapPortalFX(dropX, SPAWN_Y, Math.max(26, ORB_TIERS[currentTier].radius * 1.1));
+      renderer.spawnFloatingBanner('境符「隙间穿梭」', undefined, '#d8adff', orb.x, Math.max(135, orb.y - 24), 1.05);
+      if (orb.tier > highestTier) {
+        highestTier = orb.tier;
+        syncEvolutionChain();
+        syncScoreHUD();
+      }
+    }
+
+    yukariPickMode = false;
+    yukariHoveredOrbId = null;
+    syncSpellUI();
+    syncGapHoldUI();
+    return true;
+  }
+
+  function triggerDeathbomb(): void {
+    spendOneCharge();
+    cancelYukariPick();
+    const cleared = physics.executeDeathbombClear();
+    audio.playDeathbomb();
+    renderer.spawnDeathbombFX(cleared);
+    syncSpellUI();
+    syncScoreHUD('✦决死结界');
+  }
+
+  function requestDrop(): void {
+    if (phase !== 'playing' || yukariPickMode) return;
     audio.unlock();
     if (dropCooldownMs <= 0) {
       executeDrop();
     } else {
-      // Buffer rapid clicks/taps so inputs right before unlock never feel eaten
       dropBufferMs = DROP_BUFFER_MS;
     }
   }
@@ -424,7 +652,15 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
   function executeDrop(): void {
     const droppedTier = currentTier;
     dropX = physics.clampDropX(dropX, droppedTier);
-    lastDroppedOrb = physics.spawnDroppedOrb(dropX, droppedTier);
+
+    const inRapidTimeStop = timeStopTimer > 0.02 && timeStopRapidDropsLeft > 0;
+    if (inRapidTimeStop) {
+      lastDroppedOrb = physics.spawnTimeStopOrb(dropX, droppedTier);
+      timeStopRapidDropsLeft--;
+    } else {
+      lastDroppedOrb = physics.spawnDroppedOrb(dropX, droppedTier);
+    }
+
     audio.playDrop(droppedTier);
 
     if (droppedTier > highestTier) {
@@ -434,10 +670,18 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     }
 
     dropCount++;
+    if (gapCooldownDrops > 0) {
+      gapCooldownDrops = Math.max(0, gapCooldownDrops - 1);
+      syncGapHoldUI();
+    }
+
     currentTier = nextTier;
     nextTier = pickNextSpawnTier(dropCount + 1);
     dropX = physics.clampDropX(dropX, currentTier);
-    dropCooldownMs = DROP_COOLDOWN_MS;
+
+    // Zero-cooldown rapid drop during Sakuya's Time Stop (up to 3 rapid drops!)
+    dropCooldownMs =
+      timeStopTimer > 0.02 && timeStopRapidDropsLeft > 0 ? 55 : DROP_COOLDOWN_MS;
     timeSinceDropMs = 0;
     dropBufferMs = 0;
     heldPopProgress = 0;
@@ -448,16 +692,19 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     if (destroyed) return;
     if (paused && phase === 'playing') {
       phase = 'paused';
+      cancelYukariPick();
       keyLeft = false;
       keyRight = false;
       keyVelX = 0;
       activePointerId = null;
       dropBufferMs = 0;
       syncOverlays();
+      syncSpellUI();
     } else if (!paused && phase === 'paused') {
       phase = 'playing';
       lastFrameTime = performance.now();
       syncOverlays();
+      syncSpellUI();
     }
   }
 
@@ -465,6 +712,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     if (gameOverReported) return;
     gameOverReported = true;
     phase = 'gameover';
+    cancelYukariPick();
     keyLeft = false;
     keyRight = false;
     keyVelX = 0;
@@ -485,9 +733,19 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
 
     showGameOverModal();
     syncOverlays();
+    syncSpellUI();
   }
 
-  // --- Ultra-Responsive Pointer / Touch / Keyboard Handlers ---
+  // --- Ultra-Responsive Pointer / Touch / Right-Click / Keyboard Handlers ---
+  function clientToBoard(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return { x: dropX, y: SPAWN_Y };
+    return {
+      x: ((clientX - rect.left) / rect.width) * BOARD_WIDTH,
+      y: ((clientY - rect.top) / rect.height) * BOARD_HEIGHT,
+    };
+  }
+
   function clientXToBoardX(clientX: number): number {
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0) return dropX;
@@ -495,10 +753,34 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     return physics.clampDropX(raw, currentTier);
   }
 
+  const onCanvasContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+  };
+
   const onCanvasPointerDown = (e: PointerEvent): void => {
     audio.unlock();
     if (phase !== 'playing') return;
+
+    // Right-click casts Spell Card (or cancels Yukari target-pick!)
+    if (e.pointerType === 'mouse' && e.button === 2) {
+      e.preventDefault();
+      if (yukariPickMode) {
+        cancelYukariPick();
+      } else {
+        triggerActiveSpell();
+      }
+      return;
+    }
+
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+    // Yukari target-pick mode: left-click an orb to swap through Gap!
+    if (yukariPickMode) {
+      e.preventDefault();
+      const pt = clientToBoard(e.clientX, e.clientY);
+      tryYukariSwapAt(pt.x, pt.y);
+      return;
+    }
 
     e.preventDefault();
     keyVelX = 0;
@@ -513,6 +795,14 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
 
   const onWindowPointerMove = (e: PointerEvent): void => {
     if (phase !== 'playing') return;
+
+    if (yukariPickMode) {
+      const pt = clientToBoard(e.clientX, e.clientY);
+      const hit = physics.findOrbAtPoint(pt.x, pt.y);
+      yukariHoveredOrbId = hit ? hit.id : null;
+      return;
+    }
+
     if (activePointerId !== null && e.pointerId === activePointerId) {
       keyVelX = 0;
       dropX = clientXToBoardX(e.clientX);
@@ -540,7 +830,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
       } catch {
         // Ignore if already released
       }
-      if (phase === 'playing') {
+      if (phase === 'playing' && !yukariPickMode) {
         dropX = clientXToBoardX(e.clientX);
         requestDrop();
       }
@@ -569,14 +859,33 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
       e.preventDefault();
       if (e.repeat) return;
       audio.unlock();
-      if (phase === 'ready') {
-        startGame();
-      } else if (phase === 'playing') {
+      if (phase === 'playing' && !yukariPickMode) {
         requestDrop();
       } else if (phase === 'gameover' && (e.code === 'Enter' || e.code === 'Space')) {
-        resetRun(true);
+        resetRun();
       }
-    } else if (e.code === 'KeyP' || e.code === 'Escape') {
+    } else if (e.code === 'KeyE') {
+      if (phase === 'playing') {
+        e.preventDefault();
+        if (!e.repeat) triggerActiveSpell();
+      }
+    } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+      if (phase === 'playing' && !yukariPickMode) {
+        e.preventDefault();
+        if (!e.repeat) triggerGapHold();
+      }
+    } else if (e.code === 'Escape') {
+      if (yukariPickMode) {
+        e.preventDefault();
+        cancelYukariPick();
+      } else if (phase === 'playing') {
+        e.preventDefault();
+        setPaused(true);
+      } else if (phase === 'paused') {
+        e.preventDefault();
+        setPaused(false);
+      }
+    } else if (e.code === 'KeyP') {
       if (phase === 'playing') {
         e.preventDefault();
         setPaused(true);
@@ -586,7 +895,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
       }
     } else if (e.code === 'KeyR' && phase === 'gameover') {
       e.preventDefault();
-      resetRun(true);
+      resetRun();
     }
   };
 
@@ -608,17 +917,30 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     if (!btn) return;
     const action = btn.dataset.action;
     audio.unlock();
-    if (action === 'start') {
-      startGame();
-    } else if (action === 'resume') {
+
+    if (action === 'resume') {
       setPaused(false);
     } else if (action === 'restart') {
-      resetRun(true);
+      resetRun();
     } else if (action === 'menu') {
       ctx.onBackToMenu();
+    } else if (action === 'gap-hold') {
+      triggerGapHold();
+    } else if (action === 'cast-spell') {
+      triggerActiveSpell();
+    } else if (action === 'select-support') {
+      const sp = btn.dataset.spell as SupportSpellId | undefined;
+      if (sp && supportBtns.has(sp)) {
+        if (yukariPickMode && sp !== 'yukari') {
+          cancelYukariPick();
+        }
+        selectedSpell = sp;
+        syncSpellUI();
+      }
     }
   };
 
+  canvas.addEventListener('contextmenu', onCanvasContextMenu);
   canvas.addEventListener('pointerdown', onCanvasPointerDown);
   window.addEventListener('pointermove', onWindowPointerMove);
   window.addEventListener('pointerup', onWindowPointerUp);
@@ -646,11 +968,39 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
       const dtMs = dt * 1000;
       timeSinceDropMs += dtMs;
 
+      // Fade out light non-blocking hint right after first drop
+      if (dropCount > 0 && firstDropHintAlpha > 0) {
+        firstDropHintAlpha = Math.max(0, firstDropHintAlpha - dt * 3.2);
+      }
+
+      // Advance Hyakki Yagyo Fever timer (paused only during Yukari target-pick)
+      if (feverTimer > 0 && !yukariPickMode) {
+        const wasFever = feverTimer > 0;
+        feverTimer = Math.max(0, feverTimer - dt);
+        if (wasFever && feverTimer === 0) {
+          syncScoreHUD();
+        }
+      }
+
+      // Advance Sakuya Time Stop timer
+      if (timeStopTimer > 0 && !yukariPickMode) {
+        timeStopTimer = Math.max(0, timeStopTimer - dt);
+        const secCeil = Math.ceil(timeStopTimer);
+        if (secCeil > 0 && secCeil < timeStopLastTickSec) {
+          timeStopLastTickSec = secCeil;
+          audio.playTimeStopTick();
+        }
+        if (timeStopTimer === 0) {
+          timeStopRapidDropsLeft = 0;
+          physics.onTimeStopEnd();
+          audio.playTimeStopResume();
+        }
+      }
+
       if (dropCooldownMs > 0) {
         dropCooldownMs = Math.max(0, dropCooldownMs - dtMs);
 
-        // Early unlock once the dropped orb cleanly clears the spawn zone (after brief guard)
-        if (dropCooldownMs > 0 && timeSinceDropMs >= DROP_EARLY_UNLOCK_MS) {
+        if (dropCooldownMs > 0 && timeSinceDropMs >= DROP_EARLY_UNLOCK_MS && timeStopTimer <= 0) {
           const cleared =
             !lastDroppedOrb ||
             !physics.orbs.includes(lastDroppedOrb) ||
@@ -662,47 +1012,62 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
         }
       }
 
-      // Advance held-orb spring pop-in animation once orb becomes ready
       if (dropCooldownMs <= 0 && heldPopProgress < 1) {
         heldPopProgress = Math.min(1, heldPopProgress + dt * 4.4);
       }
 
-      // Fire buffered drop the exact frame cooldown unlocks
-      if (dropBufferMs > 0) {
+      if (dropBufferMs > 0 && !yukariPickMode) {
         dropBufferMs = Math.max(0, dropBufferMs - dtMs);
         if (dropCooldownMs <= 0) {
           executeDrop();
         }
       }
 
-      // Smooth keyboard acceleration/deceleration curve
-      const moveDir = (keyRight ? 1 : 0) - (keyLeft ? 1 : 0);
-      if (moveDir !== 0) {
-        if (keyVelX * moveDir <= 0 || Math.abs(keyVelX) < KEY_INITIAL_SPEED) {
-          keyVelX = moveDir * KEY_INITIAL_SPEED;
-        } else {
-          keyVelX += moveDir * KEY_ACCEL * dt;
-          if (Math.abs(keyVelX) > KEY_MAX_SPEED) {
-            keyVelX = moveDir * KEY_MAX_SPEED;
+      // Smooth keyboard aiming
+      if (!yukariPickMode) {
+        const moveDir = (keyRight ? 1 : 0) - (keyLeft ? 1 : 0);
+        if (moveDir !== 0) {
+          if (keyVelX * moveDir <= 0 || Math.abs(keyVelX) < KEY_INITIAL_SPEED) {
+            keyVelX = moveDir * KEY_INITIAL_SPEED;
+          } else {
+            keyVelX += moveDir * KEY_ACCEL * dt;
+            if (Math.abs(keyVelX) > KEY_MAX_SPEED) {
+              keyVelX = moveDir * KEY_MAX_SPEED;
+            }
           }
+        } else if (Math.abs(keyVelX) > 0.1) {
+          keyVelX *= Math.pow(0.00012, dt);
+          if (Math.abs(keyVelX) < 4) keyVelX = 0;
         }
-      } else if (Math.abs(keyVelX) > 0.1) {
-        keyVelX *= Math.pow(0.00012, dt);
-        if (Math.abs(keyVelX) < 4) keyVelX = 0;
+
+        if (keyVelX !== 0) {
+          const nextX = dropX + keyVelX * dt;
+          const clampedX = physics.clampDropX(nextX, currentTier);
+          if (clampedX !== nextX) {
+            keyVelX = 0;
+          }
+          dropX = clampedX;
+        }
       }
 
-      if (keyVelX !== 0) {
-        const nextX = dropX + keyVelX * dt;
-        const clampedX = physics.clampDropX(nextX, currentTier);
-        if (clampedX !== nextX) {
-          keyVelX = 0;
-        }
-        dropX = clampedX;
-      }
-
-      // Advance fixed-timestep circle physics
-      const res = physics.update(dt);
+      // Advance circle physics (honoring Sakuya Time Stop & Yukari Pick pause)
+      const res = physics.update(dt, {
+        timeStopActive: timeStopTimer > 0.01,
+        pauseSimulation: yukariPickMode,
+      });
       nearDangerFactor = res.nearDangerFactor;
+
+      // Crisp chime + ring when Time Stop rapid drops snap into frozen position
+      if (res.timeStopLanded.length > 0) {
+        for (const o of res.timeStopLanded) {
+          audio.playTimeStopTick();
+          renderer.spawnTimeStopSnapFX(o.x, o.y, o.radius);
+        }
+        // Once all 3 rapid drops have landed, shorten remaining wait cleanly for instant chain payoff!
+        if (timeStopRapidDropsLeft <= 0 && !physics.orbs.some((o) => o.timeStopDrop)) {
+          timeStopTimer = Math.min(timeStopTimer, 0.52);
+        }
+      }
 
       if (res.strongestBounce > 0.28) {
         audio.playBounce(res.strongestBounce);
@@ -712,26 +1077,40 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
         audio.playDangerTick(res.dangerWarningTick);
       }
 
-      // Process merge events
+      // Process merge events (with 2× Hyakki Yagyo Fever + Spirit Gauge charging!)
       if (res.merges.length > 0) {
         let bestComboLabel: string | undefined;
         let tierUpdated = false;
+        let totalSpiritGain = 0;
+        let triggerFever = false;
 
         for (let i = 0; i < res.merges.length; i++) {
           const ev = res.merges[i];
-          score += ev.points;
+          const feverActive = feverTimer > 0.01;
+          const finalPoints = feverActive ? ev.points * 2 : ev.points;
+          const fxEvent = feverActive ? { ...ev, points: finalPoints } : ev;
+
+          score += finalPoints;
           if (score > bestScore) {
             bestScore = score;
             isNewRecord = true;
           }
 
-          renderer.spawnMergeFX(ev);
+          totalSpiritGain += ev.isDoubleSuika
+            ? 60
+            : Math.round(9 + ev.newTier * 2.8 + Math.max(0, ev.combo - 1) * 6);
+
+          renderer.spawnMergeFX(fxEvent, feverActive);
 
           if (ev.isDoubleSuika) {
             audio.playSuikaCelebration();
             bestComboLabel = '🍉双萃香!';
+            triggerFever = true;
           } else {
             audio.playMerge(ev.newTier, ev.combo);
+            if (ev.newTier >= MAX_TIER) {
+              triggerFever = true;
+            }
             if (ev.newTier > highestTier) {
               highestTier = Math.min(MAX_TIER, ev.newTier);
               tierUpdated = true;
@@ -742,18 +1121,48 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
           }
         }
 
+        if (triggerFever) {
+          feverTimer = FEVER_DURATION;
+          audio.playFeverStart();
+          renderer.spawnFeverStartFX();
+        }
+
+        addSpirit(totalSpiritGain);
         if (tierUpdated) syncEvolutionChain();
         syncScoreHUD(bestComboLabel);
       }
 
-      renderer.updateEffects(dt);
-
-      if (res.dangerTriggered) {
-        handleGameOver();
+      // Advance VFX & process Reimu homing ofuda impacts
+      const landedOfudaIds = renderer.updateEffects(dt, physics.orbs, feverTimer > 0.01);
+      if (landedOfudaIds.length > 0) {
+        for (const orbId of landedOfudaIds) {
+          const removed = physics.removeOrbById(orbId);
+          if (removed) {
+            const baseBonus = Math.max(5, ORB_TIERS[removed.tier].score * 2);
+            const pts = feverTimer > 0.01 ? baseBonus * 2 : baseBonus;
+            score += pts;
+            if (score > bestScore) {
+              bestScore = score;
+              isNewRecord = true;
+            }
+            audio.playOfudaHit();
+            renderer.spawnOfudaSealBurst(removed.x, removed.y, removed.tier, pts);
+          }
+        }
+        syncScoreHUD();
       }
-    } else if (phase === 'ready' || phase === 'gameover') {
+
+      // Danger overflow -> Auto Deathbomb 「决死结界」 if >= 1 full Spell charge!
+      if (res.dangerTriggered) {
+        if (getSpellCharges() >= 1) {
+          triggerDeathbomb();
+        } else {
+          handleGameOver();
+        }
+      }
+    } else if (phase === 'gameover') {
       elapsedTime += dt;
-      renderer.updateEffects(dt);
+      renderer.updateEffects(dt, physics.orbs, false);
     }
 
     // Render frame
@@ -767,21 +1176,30 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
         orbs: physics.orbs,
         heldTier: currentTier,
         dropX,
-        canDrop: dropCooldownMs <= 0 && phase === 'playing',
-        isAiming: activePointerId !== null && phase === 'playing',
+        canDrop: dropCooldownMs <= 0 && phase === 'playing' && !yukariPickMode,
+        isAiming: activePointerId !== null && phase === 'playing' && !yukariPickMode,
         heldPopProgress,
-        showGuide: phase === 'playing' || phase === 'ready',
+        showGuide: phase === 'playing',
         predictedLandingY: predictedY,
         dangerTimer: physics.dangerTimer,
         nearDangerFactor,
         comboCount: physics.comboCount,
         time: elapsedTime,
+        timeStopTimer,
+        timeStopRapidDropsLeft,
+        yukariPickMode,
+        yukariHoveredOrbId,
+        suikaShrinkTimer: physics.suikaShrinkTimer,
+        feverTimer,
+        firstDropHintAlpha,
       });
     }
   }
 
-  // Initial sync & start RAF loop
+  // Initial sync & start RAF loop directly ready-to-drop!
   syncNextPreview();
+  syncGapHoldUI();
+  syncSpellUI();
   syncEvolutionChain();
   syncScoreHUD();
   syncOverlays();
@@ -793,6 +1211,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
       destroyed = true;
       cancelAnimationFrame(rafId);
       resizeObserver.disconnect();
+      canvas.removeEventListener('contextmenu', onCanvasContextMenu);
       canvas.removeEventListener('pointerdown', onCanvasPointerDown);
       window.removeEventListener('pointermove', onWindowPointerMove);
       window.removeEventListener('pointerup', onWindowPointerUp);
@@ -808,7 +1227,7 @@ export function mountSuikaGame(ctx: GameMountContext): GameInstance {
     restart(): void {
       if (destroyed) return;
       audio.unlock();
-      resetRun(true);
+      resetRun();
     },
     setPaused,
   };
