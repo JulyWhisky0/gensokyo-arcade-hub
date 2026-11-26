@@ -8,7 +8,7 @@ export const PUYO_STYLES = `
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 8px;
+  padding: 6px 8px;
   box-sizing: border-box;
   overflow: hidden;
   user-select: none;
@@ -77,23 +77,24 @@ export const PUYO_STYLES = `
   touch-action: none;
 }
 
+/* Ultra-clean Sidebar */
 .puyo-sidebar {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: 184px;
+  width: 164px;
   flex-shrink: 0;
   max-height: 100%;
 }
 
 .puyo-panel {
   background: linear-gradient(165deg, rgba(24, 16, 52, 0.92), rgba(14, 10, 34, 0.92));
-  border: 1px solid rgba(245, 198, 96, 0.34);
+  border: 1px solid rgba(245, 198, 96, 0.32);
   border-radius: 11px;
   padding: 8px 10px;
   box-shadow:
-    0 6px 16px rgba(5, 2, 18, 0.38),
-    inset 0 1px 0 rgba(255, 240, 196, 0.1);
+    0 6px 16px rgba(5, 2, 18, 0.36),
+    inset 0 1px 0 rgba(255, 240, 196, 0.08);
 }
 
 .puyo-panel-label {
@@ -111,42 +112,199 @@ export const PUYO_STYLES = `
 .puyo-preview-canvas {
   display: block;
   width: 100%;
-  height: 92px;
+  height: 90px;
 }
 
-.puyo-stats-grid {
+.puyo-diff-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(240, 194, 89, 0.15);
+  border: 1px solid rgba(240, 194, 89, 0.45);
+  color: #ffe99e;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+/* Spirit Gauge + Spell Card Panel */
+.puyo-spell-panel {
+  --spell-accent: #e83b54;
+  --spell-glow: #ffd480;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.puyo-spell-panel.ready {
+  border-color: var(--spell-glow);
+  box-shadow:
+    0 0 18px color-mix(in srgb, var(--spell-accent) 45%, transparent),
+    inset 0 0 12px color-mix(in srgb, var(--spell-glow) 18%, transparent);
+}
+
+.puyo-spell-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.puyo-spell-emblem {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(10, 6, 26, 0.72);
+  border: 1px solid rgba(255, 232, 160, 0.3);
+  flex-shrink: 0;
+}
+
+.puyo-spell-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex: 1;
+  min-width: 0;
+}
+
+.puyo-spell-char {
+  font-size: 12px;
+  font-weight: 800;
+  color: #fff6e0;
+}
+
+.puyo-spell-pct {
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--spell-glow);
+}
+
+.puyo-spirit-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(8, 5, 22, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.puyo-spirit-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--spell-accent), var(--spell-glow));
+  transition: width 0.18s ease-out;
+  box-shadow: 0 0 10px var(--spell-accent);
+}
+
+@keyframes puyoSpellPulse {
+  0%, 100% {
+    box-shadow: 0 0 10px color-mix(in srgb, var(--spell-accent) 60%, transparent);
+    transform: translateY(0);
+  }
+  50% {
+    box-shadow: 0 0 20px color-mix(in srgb, var(--spell-glow) 85%, transparent);
+    transform: translateY(-1px);
+  }
+}
+
+.puyo-spell-btn {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(18, 12, 42, 0.85);
+  color: rgba(235, 224, 255, 0.56);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: not-allowed;
+  transition: transform 0.1s ease, filter 0.15s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.puyo-spell-btn.ready {
+  cursor: pointer;
+  color: #fffdf5;
+  border-color: var(--spell-glow);
+  background: linear-gradient(135deg, var(--spell-accent), color-mix(in srgb, var(--spell-accent) 55%, #1d0c3a));
+  animation: puyoSpellPulse 1.5s ease-in-out infinite;
+}
+
+.puyo-spell-btn.ready:hover {
+  filter: brightness(1.12);
+}
+
+.puyo-spell-btn.ready:active {
+  transform: scale(0.96);
+}
+
+.puyo-spell-btn-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.puyo-spell-btn-key {
+  font-size: 9.5px;
+  font-weight: 800;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.28);
+  color: #fff2be;
+  flex-shrink: 0;
+}
+
+/* Compact Chain / Speed / Boss Stage Pills */
+.puyo-pills-panel {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
 
-.puyo-stat-box {
-  background: rgba(11, 7, 26, 0.62);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 7px;
-  padding: 5px 7px;
+.puyo-pill-stat {
+  background: linear-gradient(165deg, rgba(22, 15, 48, 0.9), rgba(13, 9, 32, 0.9));
+  border: 1px solid rgba(245, 198, 96, 0.24);
+  border-radius: 9px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   min-width: 0;
 }
 
-.puyo-stat-box.wide {
+.puyo-pill-stat.wide {
   grid-column: span 2;
-  display: flex;
-  align-items: baseline;
+  flex-direction: row;
+  align-items: center;
   justify-content: space-between;
+  gap: 6px;
 }
 
 .puyo-stat-k {
   font-size: 10px;
-  color: rgba(235, 224, 255, 0.66);
-  font-weight: 600;
+  color: rgba(235, 224, 255, 0.65);
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
 .puyo-stat-v {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   color: #fff8e7;
-  line-height: 1.2;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .puyo-stat-v.gold {
@@ -157,22 +315,23 @@ export const PUYO_STYLES = `
   color: #ff8aa0;
 }
 
-.puyo-diff-pill {
-  display: inline-flex;
+/* Mobile / Touch Pad ONLY (never shown on standard desktop) */
+.puyo-mobile-pad {
+  display: none;
+  width: 100%;
+  max-width: 400px;
+  gap: 6px;
   align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: rgba(240, 194, 89, 0.16);
-  border: 1px solid rgba(240, 194, 89, 0.45);
-  color: #ffe99e;
+  justify-content: space-between;
+  flex-shrink: 0;
 }
 
-.puyo-pad {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
+.puyo-stage.touch-pad .puyo-mobile-pad {
+  display: flex;
+}
+
+.puyo-mobile-group {
+  display: flex;
   gap: 5px;
 }
 
@@ -181,9 +340,10 @@ export const PUYO_STYLES = `
   border: 1px solid rgba(240, 194, 89, 0.34);
   background: linear-gradient(180deg, rgba(45, 32, 86, 0.92), rgba(26, 18, 54, 0.95));
   color: #fff6e0;
-  border-radius: 8px;
-  height: 34px;
-  font-size: 13px;
+  border-radius: 10px;
+  width: 44px;
+  height: 42px;
+  font-size: 15px;
   font-weight: 800;
   cursor: pointer;
   display: flex;
@@ -193,60 +353,29 @@ export const PUYO_STYLES = `
   transition: transform 0.06s ease, background 0.12s ease, border-color 0.12s ease;
 }
 
-.puyo-btn-ctrl:hover {
-  border-color: rgba(240, 194, 89, 0.72);
-  background: linear-gradient(180deg, rgba(64, 44, 118, 0.95), rgba(35, 23, 72, 0.95));
-}
-
 .puyo-btn-ctrl:active,
 .puyo-btn-ctrl.pressed {
-  transform: scale(0.94);
-  background: linear-gradient(180deg, rgba(224, 62, 82, 0.75), rgba(152, 24, 44, 0.85));
+  transform: scale(0.93);
+  background: linear-gradient(180deg, rgba(224, 62, 82, 0.78), rgba(152, 24, 44, 0.88));
   border-color: #ffe38f;
 }
 
 .puyo-btn-ctrl.accent {
-  border-color: rgba(232, 59, 84, 0.52);
+  border-color: rgba(232, 59, 84, 0.55);
   background: linear-gradient(180deg, rgba(168, 30, 56, 0.88), rgba(105, 16, 36, 0.94));
 }
 
-.puyo-keys-hint {
-  font-size: 10px;
-  line-height: 1.45;
-  color: rgba(224, 212, 248, 0.68);
+.puyo-btn-ctrl.spell-mini {
+  border-color: rgba(255, 255, 255, 0.2);
+  opacity: 0.55;
 }
 
-.puyo-keys-hint kbd {
-  display: inline-block;
-  padding: 0 4px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  color: #ffe89e;
-  font-size: 9.5px;
-  font-family: ui-monospace, SFMono-Regular, monospace;
-}
-
-.puyo-mobile-pad {
-  display: none;
-  width: 100%;
-  max-width: 390px;
-  gap: 8px;
-  align-items: center;
-  justify-content: space-between;
-  flex-shrink: 0;
-}
-
-.puyo-mobile-group {
-  display: flex;
-  gap: 6px;
-}
-
-.puyo-mobile-pad .puyo-btn-ctrl {
-  width: 48px;
-  height: 44px;
-  font-size: 16px;
-  border-radius: 10px;
+.puyo-btn-ctrl.spell-mini.ready {
+  opacity: 1;
+  border-color: #ffe694;
+  background: linear-gradient(135deg, #e83b54, #f5b82e);
+  color: #190b28;
+  box-shadow: 0 0 12px rgba(245, 184, 46, 0.75);
 }
 
 /* Overlays */
@@ -269,13 +398,13 @@ export const PUYO_STYLES = `
 }
 
 .puyo-modal {
-  width: min(370px, 100%);
+  width: min(360px, 100%);
   max-height: 100%;
   overflow-y: auto;
   background: linear-gradient(160deg, rgba(28, 19, 58, 0.97), rgba(16, 11, 36, 0.98));
   border: 1.5px solid rgba(240, 194, 89, 0.56);
   border-radius: 16px;
-  padding: 18px 18px 16px;
+  padding: 16px 16px 14px;
   box-shadow:
     0 20px 50px rgba(0, 0, 0, 0.65),
     0 0 32px rgba(200, 35, 51, 0.24);
@@ -283,18 +412,14 @@ export const PUYO_STYLES = `
   box-sizing: border-box;
 }
 
-.puyo-modal-eyebrow {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  color: #f0c259;
-  text-transform: uppercase;
-  margin-bottom: 4px;
+.puyo-modal.compact {
+  width: min(320px, 100%);
+  padding: 18px 16px 16px;
 }
 
 .puyo-modal-title {
-  margin: 0 0 4px;
-  font-size: 22px;
+  margin: 0 0 12px;
+  font-size: 20px;
   font-weight: 900;
   background: linear-gradient(90deg, #fff6d1, #f5b82e, #ff7e96);
   -webkit-background-clip: text;
@@ -303,81 +428,170 @@ export const PUYO_STYLES = `
 }
 
 .puyo-modal-sub {
-  margin: 0 0 12px;
+  margin: -6px 0 12px;
   font-size: 12px;
-  color: rgba(235, 224, 255, 0.78);
-  line-height: 1.45;
+  color: rgba(235, 224, 255, 0.76);
 }
 
-.puyo-orb-row {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.puyo-orb-chip {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(255, 255, 255, 0.35);
-  box-shadow: inset -3px -3px 6px rgba(0, 0, 0, 0.35), 0 0 10px rgba(255, 255, 255, 0.18);
-}
-
-.puyo-diff-list {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin-bottom: 14px;
+.puyo-section-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: rgba(240, 194, 89, 0.85);
   text-align: left;
+  margin: 0 0 5px 2px;
 }
 
-.puyo-diff-opt {
+/* Mode Selector Pills */
+.puyo-mode-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-bottom: 11px;
+}
+
+.puyo-mode-opt {
   appearance: none;
-  width: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 9px 11px;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
   border-radius: 10px;
   border: 1.5px solid rgba(255, 255, 255, 0.14);
+  background: rgba(14, 9, 32, 0.74);
+  color: #e8ddf8;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.puyo-mode-opt:hover {
+  border-color: rgba(240, 194, 89, 0.55);
+}
+
+.puyo-mode-opt.selected {
+  border-color: #f5b82e;
+  background: linear-gradient(135deg, rgba(224, 62, 82, 0.34), rgba(245, 184, 46, 0.22));
+  color: #fff8e2;
+  box-shadow: 0 0 14px rgba(245, 184, 46, 0.22);
+}
+
+.puyo-mode-badge {
+  font-size: 9.5px;
+  font-weight: 900;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: #e83b54;
+  color: #fff;
+}
+
+.puyo-mode-badge.subtle {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffe8a3;
+}
+
+/* Compact Difficulty Pills */
+.puyo-diff-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 11px;
+}
+
+.puyo-pill-opt {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 6px;
+  border-radius: 9px;
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
   background: rgba(14, 9, 32, 0.72);
+  color: #f3eaff;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.puyo-pill-opt:hover {
+  border-color: rgba(240, 194, 89, 0.55);
+}
+
+.puyo-pill-opt.selected {
+  border-color: #f5b82e;
+  background: linear-gradient(135deg, rgba(245, 184, 46, 0.24), rgba(155, 78, 230, 0.24));
+  color: #fff9e3;
+}
+
+.puyo-pill-dot {
+  font-size: 9px;
+  font-weight: 900;
+  padding: 1px 4px;
+  border-radius: 999px;
+  color: #130b24;
+}
+
+/* Compact Character Selector Pills */
+.puyo-char-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+.puyo-char-opt {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 5px 7px;
+  border-radius: 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
+  background: rgba(14, 9, 32, 0.74);
   color: #f8f1ff;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
 }
 
-.puyo-diff-opt:hover {
-  border-color: rgba(240, 194, 89, 0.55);
-  background: rgba(34, 22, 68, 0.85);
+.puyo-char-opt:hover {
+  border-color: color-mix(in srgb, var(--char-accent) 70%, #fff);
+  transform: translateY(-1px);
 }
 
-.puyo-diff-opt.selected {
-  border-color: #f5b82e;
-  background: linear-gradient(90deg, rgba(200, 35, 51, 0.28), rgba(245, 184, 46, 0.22));
-  box-shadow: 0 0 16px rgba(245, 184, 46, 0.2);
+.puyo-char-opt.selected {
+  border-color: var(--char-glow);
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--char-accent) 34%, rgba(18, 10, 42, 0.92)),
+    rgba(20, 12, 46, 0.92)
+  );
+  box-shadow: 0 0 14px color-mix(in srgb, var(--char-accent) 36%, transparent);
 }
 
-.puyo-diff-title {
-  font-size: 13px;
-  font-weight: 800;
-  color: #fff6dd;
+.puyo-char-emblem {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
 }
 
-.puyo-diff-desc {
-  font-size: 11px;
-  color: rgba(225, 214, 248, 0.72);
-  margin-top: 2px;
+.puyo-char-name {
+  font-size: 12.5px;
+  font-weight: 900;
+  color: #fff8e6;
 }
 
-.puyo-diff-tag {
-  font-size: 10px;
-  font-weight: 800;
-  padding: 3px 7px;
-  border-radius: 999px;
-  color: #120c26;
-  flex-shrink: 0;
+.puyo-char-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--char-glow);
+  white-space: nowrap;
 }
 
 .puyo-action-row {
@@ -391,16 +605,16 @@ export const PUYO_STYLES = `
   appearance: none;
   border: none;
   border-radius: 10px;
-  padding: 10px 20px;
+  padding: 10px 18px;
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 900;
   cursor: pointer;
   color: #fffdf7;
   background: linear-gradient(135deg, #e03e52, #b81d38);
   box-shadow: 0 6px 18px rgba(224, 62, 82, 0.42);
   transition: transform 0.1s ease, filter 0.15s ease;
   flex: 1;
-  min-width: 120px;
+  min-width: 112px;
 }
 
 .puyo-cta:hover {
@@ -423,7 +637,7 @@ export const PUYO_STYLES = `
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 8px;
-  margin: 12px 0 14px;
+  margin: 10px 0 14px;
 }
 
 .puyo-summary-item {
@@ -435,7 +649,7 @@ export const PUYO_STYLES = `
 
 .puyo-new-badge {
   display: inline-block;
-  margin-left: 6px;
+  margin-left: 5px;
   padding: 2px 6px;
   border-radius: 999px;
   background: linear-gradient(90deg, #f5b82e, #ff7043);
@@ -451,7 +665,7 @@ export const PUYO_STYLES = `
 }
 
 .puyo-stage.compact .puyo-sidebar {
-  width: 106px;
+  width: 104px;
   gap: 6px;
 }
 
@@ -460,30 +674,36 @@ export const PUYO_STYLES = `
 }
 
 .puyo-stage.compact .puyo-preview-canvas {
-  height: 76px;
+  height: 72px;
 }
 
-.puyo-stage.compact .puyo-stats-grid {
+.puyo-stage.compact .puyo-spell-emblem {
+  width: 22px;
+  height: 22px;
+}
+
+.puyo-stage.compact .puyo-spell-btn {
+  padding: 5px 6px;
+  font-size: 10.5px;
+}
+
+.puyo-stage.compact .puyo-spell-btn-key {
+  display: none;
+}
+
+.puyo-stage.compact .puyo-pills-panel {
   grid-template-columns: 1fr;
   gap: 4px;
 }
 
-.puyo-stage.compact .puyo-stat-box.wide {
+.puyo-stage.compact .puyo-pill-stat.wide {
   grid-column: span 1;
   flex-direction: column;
   align-items: flex-start;
+  gap: 1px;
 }
 
 .puyo-stage.compact .puyo-stat-v {
-  font-size: 13px;
-}
-
-.puyo-stage.compact .puyo-desktop-pad,
-.puyo-stage.compact .puyo-desktop-keys {
-  display: none;
-}
-
-.puyo-stage.compact .puyo-mobile-pad {
-  display: flex;
+  font-size: 12px;
 }
 `;

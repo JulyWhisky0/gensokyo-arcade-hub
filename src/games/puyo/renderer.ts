@@ -1,8 +1,14 @@
 import { PuyoEngine } from './engine';
 import {
+  ActiveSpellVfx,
+  BOSS_BANNER_CELLS,
+  BOSS_PORTRAIT_X,
+  BUFFER_PEEK_CELLS,
+  BossState,
   COLS,
   DEATH_COL,
   DEATH_ROW,
+  GameMode,
   HIDDEN_ROWS,
   PUYO_THEMES,
   PuyoColor,
@@ -12,8 +18,12 @@ import {
   VISIBLE_ROWS,
 } from './types';
 
-export const BUFFER_PEEK_CELLS = 0.55;
+export { BUFFER_PEEK_CELLS };
 export const BOARD_ASPECT_ROWS = VISIBLE_ROWS + BUFFER_PEEK_CELLS;
+
+export function getBoardAspectRows(mode: GameMode): number {
+  return VISIBLE_ROWS + BUFFER_PEEK_CELLS + (mode === 'boss' ? BOSS_BANNER_CELLS : 0);
+}
 
 interface StarSpec {
   x: number;
@@ -73,12 +83,20 @@ const BG_FIREFLIES: readonly FireflySpec[] = Array.from({ length: 14 }, (_, i) =
 export class PuyoRenderer {
   private cellSize = 36;
   private dpr = 1;
+  private showBossBanner = true;
 
-  public resizeBoard(canvas: HTMLCanvasElement, cellSize: number): void {
+  public resizeBoard(
+    canvas: HTMLCanvasElement,
+    cellSize: number,
+    showBossBanner = false,
+  ): void {
     this.cellSize = Math.max(16, Math.floor(cellSize));
+    this.showBossBanner = showBossBanner;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const aspectRows =
+      VISIBLE_ROWS + BUFFER_PEEK_CELLS + (showBossBanner ? BOSS_BANNER_CELLS : 0);
     const cssW = this.cellSize * COLS;
-    const cssH = Math.round(this.cellSize * BOARD_ASPECT_ROWS);
+    const cssH = Math.round(this.cellSize * aspectRows);
     canvas.style.width = `${cssW}px`;
     canvas.style.height = `${cssH}px`;
     const targetW = Math.round(cssW * this.dpr);
@@ -89,8 +107,15 @@ export class PuyoRenderer {
     }
   }
 
-  private rowToY(row: number): number {
-    return (row - HIDDEN_ROWS + BUFFER_PEEK_CELLS) * this.cellSize;
+  private getHeaderHeight(hasBoss = this.showBossBanner): number {
+    return hasBoss ? BOSS_BANNER_CELLS * this.cellSize : 0;
+  }
+
+  private rowToY(row: number, hasBoss = this.showBossBanner): number {
+    return (
+      this.getHeaderHeight(hasBoss) +
+      (row - HIDDEN_ROWS + BUFFER_PEEK_CELLS) * this.cellSize
+    );
   }
 
   public renderBoard(canvas: HTMLCanvasElement, engine: PuyoEngine): void {
@@ -98,14 +123,19 @@ export class PuyoRenderer {
     if (!ctx) return;
 
     const cs = this.cellSize;
+    const hasBoss = engine.mode === 'boss' && engine.boss !== null;
+    this.showBossBanner = hasBoss;
+    const headerH = this.getHeaderHeight(hasBoss);
     const width = cs * COLS;
-    const height = Math.round(cs * BOARD_ASPECT_ROWS);
-    const topLineY = BUFFER_PEEK_CELLS * cs;
+    const aspectRows =
+      VISIBLE_ROWS + BUFFER_PEEK_CELLS + (hasBoss ? BOSS_BANNER_CELLS : 0);
+    const height = Math.round(cs * aspectRows);
+    const topLineY = headerH + BUFFER_PEEK_CELLS * cs;
 
     ctx.save();
     ctx.scale(this.dpr, this.dpr);
 
-    // Screen shake on chains (smooth damped oscillation)
+    // Screen shake on chains & spells (smooth damped oscillation)
     if (engine.shakeTime > 0) {
       const ratio = Math.min(1, engine.shakeTime / 260);
       const mag = engine.shakeMagnitude * ratio;
@@ -118,6 +148,11 @@ export class PuyoRenderer {
     // 1. Starry Forest of Magic twilight backdrop + Hakkero watermark + fireflies
     this.drawForestBackdrop(ctx, width, height, topLineY, cs, engine);
 
+    // 1b. Pending Boss Ojama column warning pips along the hidden buffer strip
+    if (hasBoss && engine.boss && engine.boss.pendingOjama > 0) {
+      this.drawPendingOjamaIndicators(ctx, headerH, topLineY, cs, engine.boss, engine.elapsedMs);
+    }
+
     // 2. Crimson Shrine Seal X at death cell (col 2, top visible row)
     this.drawDeathSeal(ctx, DEATH_COL * cs + cs / 2, topLineY + cs / 2, cs, engine);
 
@@ -125,8 +160,8 @@ export class PuyoRenderer {
     for (const tr of engine.dropTrails) {
       const ratio = 1 - tr.life / tr.maxLife;
       const x = tr.col * cs + cs * 0.16;
-      const y1 = this.rowToY(tr.fromRow) + cs * 0.5;
-      const y2 = this.rowToY(tr.toRow) + cs * 0.5;
+      const y1 = Math.max(headerH, this.rowToY(tr.fromRow, hasBoss) + cs * 0.5);
+      const y2 = this.rowToY(tr.toRow, hasBoss) + cs * 0.5;
       if (y2 <= y1) continue;
       const g = ctx.createLinearGradient(0, y1, 0, y2);
       g.addColorStop(0, 'rgba(255,255,255,0)');
@@ -146,7 +181,7 @@ export class PuyoRenderer {
       this.drawGhostPuyo(
         ctx,
         g.col * cs + cs / 2,
-        this.rowToY(g.row) + cs / 2,
+        this.rowToY(g.row, hasBoss) + cs / 2,
         cs * 0.42,
         g.color,
         engine.elapsedMs,
@@ -167,58 +202,80 @@ export class PuyoRenderer {
     for (let c = 0; c < COLS; c++) {
       const cell = engine.grid[0][c];
       if (!cell) continue;
-      this.drawStandalonePuyo(
-        ctx,
-        c * cs + cs / 2,
-        this.rowToY(0) + cs / 2,
-        cs * 0.455,
-        cell.color,
-        {
-          scaleX: 1,
-          scaleY: 1,
-          alpha: 0.58,
-          blinking: false,
-          surprised: false,
-          excited: false,
-          flashWhite: 0,
-          isPivot: false,
-          lockProgress: 0,
-          lookX: 0,
-          lookY: 0,
-          nervous: false,
-          elapsedMs: engine.elapsedMs,
-        },
-      );
+      if (cell.isOjama) {
+        this.drawOjamaOrb(
+          ctx,
+          c * cs + cs / 2,
+          this.rowToY(0, hasBoss) + cs / 2,
+          cs * 0.45,
+          { scaleX: 1, scaleY: 1, alpha: 0.62, shattering: false, flashWhite: 0 },
+        );
+      } else {
+        this.drawStandalonePuyo(
+          ctx,
+          c * cs + cs / 2,
+          this.rowToY(0, hasBoss) + cs / 2,
+          cs * 0.455,
+          cell.color,
+          {
+            scaleX: 1,
+            scaleY: 1,
+            alpha: 0.58,
+            blinking: false,
+            surprised: false,
+            excited: false,
+            flashWhite: 0,
+            isPivot: false,
+            lockProgress: 0,
+            lookX: 0,
+            lookY: 0,
+            nervous: false,
+            elapsedMs: engine.elapsedMs,
+          },
+        );
+      }
     }
 
-    // 5b. Settled Visible Puyos — Seamless Per-Color Concave Metaball Gel Clusters!
+    // 5b. Settled Visible Puyos — Seamless Per-Color Concave Metaball Gel Clusters + Translucent Ojama Orbs!
     this.drawSettledMetaballClusters(ctx, cs, engine, clearingSet, clearProgress);
 
-    // 6. Independently falling puyos during gravity cascade
+    // 6. Independently falling puyos & Ojama during gravity cascade
     for (const f of engine.fallingPuyos) {
       const stretch = Math.min(0.16, f.vy * 3.8);
-      this.drawStandalonePuyo(
-        ctx,
-        f.col * cs + cs / 2,
-        this.rowToY(f.y) + cs / 2,
-        cs * 0.46,
-        f.color,
-        {
-          scaleX: 1 - stretch * 0.58,
+      const fy = this.rowToY(f.y, hasBoss) + cs / 2;
+      if (fy + cs * 0.5 < headerH) continue;
+      if (f.isOjama) {
+        this.drawOjamaOrb(ctx, f.col * cs + cs / 2, fy, cs * 0.455, {
+          scaleX: 1 - stretch * 0.52,
           scaleY: 1 + stretch,
-          alpha: 1,
-          blinking: false,
-          surprised: false,
-          excited: engine.chainExcitement > 0.2,
+          alpha: 0.96,
+          shattering: false,
           flashWhite: 0,
-          isPivot: false,
-          lockProgress: 0,
-          lookX: 0,
-          lookY: 0.35,
-          nervous: false,
-          elapsedMs: engine.elapsedMs,
-        },
-      );
+        });
+      } else {
+        this.drawStandalonePuyo(
+          ctx,
+          f.col * cs + cs / 2,
+          fy,
+          cs * 0.46,
+          f.color,
+          {
+            scaleX: 1 - stretch * 0.58,
+            scaleY: 1 + stretch,
+            alpha: 1,
+            blinking: false,
+            surprised: false,
+            excited: engine.chainExcitement > 0.2,
+            flashWhite: 0,
+            isPivot: false,
+            lockProgress: 0,
+            lookX: 0,
+            lookY: 0.35,
+            nervous: false,
+            elapsedMs: engine.elapsedMs,
+          },
+        );
+      }
     }
 
     // 7. Active player-controlled pair (60fps smoothly interpolated X, Y, & orbital arc!)
@@ -226,26 +283,55 @@ export class PuyoRenderer {
       this.drawActivePair(ctx, cs, engine);
     }
 
-    // 8. Burst particles & glowing rings
+    // 7b. Compact Fumo BOSS Banner Strip at top of board in Boss mode
+    if (hasBoss && engine.boss) {
+      this.drawBossBanner(ctx, width, headerH, cs, engine.boss, engine.elapsedMs);
+    }
+
+    // 7c. Active Character Spell Card Board VFX (Fantasy Seal / Master Spark / Philosopher's Stone)
+    if (engine.activeSpellVfx) {
+      this.drawActiveSpellVfx(
+        ctx,
+        width,
+        height,
+        headerH,
+        topLineY,
+        cs,
+        engine.activeSpellVfx,
+        engine.elapsedMs,
+      );
+    }
+
+    // 8. Glowing Danmaku Orbs flying into the Boss + Burst particles & rings
+    if (engine.danmakuOrbs.length > 0) {
+      this.drawDanmakuOrbs(ctx, topLineY, cs, engine);
+    }
     this.drawParticles(ctx, topLineY, cs, engine);
 
-    // 9. Floating chain & score popups
+    // 9. Floating chain, damage & score popups
     this.drawFloatingTexts(ctx, topLineY, cs, engine);
 
-    // 10. Dramatic Diagonal Touhou Spell Card Cut-in Banner!
+    // 10. Dramatic Diagonal Touhou Spell Card Cut-in Banner & Boss Defeat Bonus Flash!
     if (engine.spellFlash > 0.01) {
       ctx.save();
       ctx.globalAlpha = engine.spellFlash * 0.24;
       const fGrad = ctx.createLinearGradient(0, 0, width, height);
       fGrad.addColorStop(0, '#fff4c2');
-      fGrad.addColorStop(0.5, engine.spellBanner?.primaryColor ?? '#e83b54');
+      fGrad.addColorStop(
+        0.5,
+        engine.bossBonusBanner
+          ? '#f5b82e'
+          : (engine.spellBanner?.primaryColor ?? '#e83b54'),
+      );
       fGrad.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = fGrad;
       ctx.fillRect(0, 0, width, height);
       ctx.restore();
     }
-    if (engine.spellBanner) {
-      this.drawSpellBanner(ctx, width, height, cs, engine);
+    if (engine.bossBonusBanner) {
+      this.drawBossBonusBanner(ctx, width, height, topLineY, cs, engine);
+    } else if (engine.spellBanner) {
+      this.drawSpellBanner(ctx, width, height, topLineY, cs, engine);
     }
 
     // 11. Subtle inner spellbook gold corner filigree frame
@@ -639,6 +725,7 @@ export class PuyoRenderer {
       Array.from({ length: COLS }, () => null),
     );
     const byColor: CellDrawInfo[][] = [[], [], [], [], []];
+    const ojamaCells: CellDrawInfo[] = [];
 
     for (let r = HIDDEN_ROWS; r < TOTAL_ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
@@ -690,8 +777,12 @@ export class PuyoRenderer {
           flashWhite,
           color: cell.color,
         };
-        infoGrid[r][c] = info;
-        byColor[cell.color].push(info);
+        if (cell.isOjama) {
+          ojamaCells.push(info);
+        } else {
+          infoGrid[r][c] = info;
+          byColor[cell.color].push(info);
+        }
       }
     }
 
@@ -975,6 +1066,17 @@ export class PuyoRenderer {
         }
         ctx.restore();
       }
+    }
+
+    // PASS 8: Translucent 「阻碍毛玉 (Ojama)」 Orbs (never fused with colored puyos!)
+    for (const o of ojamaCells) {
+      this.drawOjamaOrb(ctx, o.x, o.y, o.radius, {
+        scaleX: o.sx,
+        scaleY: o.sy,
+        alpha: 0.94,
+        shattering: o.isClr,
+        flashWhite: o.flashWhite,
+      });
     }
   }
 
@@ -1656,6 +1758,7 @@ export class PuyoRenderer {
     ctx: CanvasRenderingContext2D,
     width: number,
     height: number,
+    topLineY: number,
     cs: number,
     engine: PuyoEngine,
   ): void {
@@ -1674,7 +1777,7 @@ export class PuyoRenderer {
       alpha = Math.max(0, 1 - (t - 0.78) / 0.22);
     }
 
-    const bannerY = height * 0.28;
+    const bannerY = topLineY + (height - topLineY) * 0.26;
     const bannerH = Math.max(50, cs * 1.72);
     const slashOffsetX = (1 - slideEase) * width * 0.62;
     const ribbonAngle = -0.115; // Sleek ~-6.6 deg diagonal slash
@@ -1765,14 +1868,15 @@ export class PuyoRenderer {
       ctx.fillRect(-ribbonW * 0.5, -bannerH * 0.5, ribbonW, bannerH);
     }
 
-    // Caster & Chain tag
+    // Caster & Chain / Spell tag
     const smallSize = Math.max(9.5, Math.round(cs * 0.29));
     ctx.font = `800 ${smallSize}px system-ui, -apple-system, sans-serif`;
     ctx.fillStyle = b.secondaryColor;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    const rightTag = b.tag ?? `${b.chain} CHAIN`;
     ctx.fillText(
-      `✦ ${b.caster}  ·  ${b.chain} CHAIN ✦`,
+      `✦ ${b.caster}  ·  ${rightTag} ✦`,
       width * 0.04,
       -bannerH * 0.21,
     );
@@ -1789,6 +1893,983 @@ export class PuyoRenderer {
     ctx.fillText(b.title, width * 0.04, bannerH * 0.17);
 
     ctx.restore();
+  }
+
+  // ==================== BOSS BANNER, FUMO PORTRAITS, OJAMA, DANMAKU & SPELL VFX ====================
+
+  private drawBossBanner(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    headerH: number,
+    cs: number,
+    boss: BossState,
+    elapsedMs: number,
+  ): void {
+    const tpl = boss.template;
+    const enterT = boss.enterTimer > 0 ? boss.enterTimer / 480 : 0;
+    const slideX = enterT * enterT * width * 0.45;
+    const defeatRatio = boss.defeatTimer > 0 ? boss.defeatTimer / 1250 : 1;
+
+    ctx.save();
+    // Clip to compact Boss header strip
+    ctx.beginPath();
+    ctx.rect(0, 0, width, headerH);
+    ctx.clip();
+
+    // Rich dark shrine battle banner backdrop
+    const bg = ctx.createLinearGradient(0, 0, width, headerH);
+    bg.addColorStop(0, '#190b30');
+    bg.addColorStop(0.5, '#251142');
+    bg.addColorStop(1, '#140928');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, width, headerH);
+
+    // Subtle Boss elemental radial aura behind Fumo portrait
+    const px = BOSS_PORTRAIT_X * cs + slideX;
+    const py = headerH * 0.5;
+    const aura = ctx.createRadialGradient(px, py, cs * 0.12, px, py, cs * 1.45);
+    aura.addColorStop(0, tpl.primaryColor);
+    aura.addColorStop(0.55, 'rgba(155, 78, 230, 0.16)');
+    aura.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.save();
+    ctx.globalAlpha = boss.defeatTimer > 0 ? 0.35 * defeatRatio : 0.32 + boss.attackFlash * 0.32;
+    ctx.fillStyle = aura;
+    ctx.fillRect(0, 0, width, headerH);
+    ctx.restore();
+
+    // Draw Cute Q-Version Fumo BOSS Portrait!
+    const bob = boss.defeatTimer > 0 ? 0 : Math.sin(elapsedMs * 0.0046) * (cs * 0.055);
+    const hitShakeX =
+      boss.hitFlash > 0 ? Math.sin(elapsedMs * 0.09) * boss.hitFlash * cs * 0.14 : 0;
+    const portraitR = Math.min(headerH * 0.41, cs * 0.72);
+    this.drawFumoBossPortrait(
+      ctx,
+      px + hitShakeX,
+      py + bob,
+      portraitR,
+      boss,
+      elapsedMs,
+    );
+
+    // Right side: Stage + Boss Name + HP Bar + Attack Countdown Bar
+    const infoX = cs * 1.82 + slideX * 0.5;
+    const infoW = Math.max(40, width - infoX - cs * 0.24);
+    const padTop = headerH * 0.15;
+
+    // Row 1: Stage Pill + Boss Name + HP Numbers
+    const nameFont = Math.max(10, Math.round(cs * 0.33));
+    const smallFont = Math.max(8.5, Math.round(cs * 0.25));
+
+    // Stage badge pill
+    const stageText = `S${boss.stage}`;
+    ctx.font = `900 ${smallFont}px system-ui, sans-serif`;
+    const badgeW = Math.max(cs * 0.58, ctx.measureText(stageText).width + 9);
+    const badgeH = Math.max(12, smallFont + 4);
+    this.fillRoundRect(ctx, infoX, padTop - 1, badgeW, badgeH, 4, tpl.primaryColor);
+    ctx.fillStyle = '#0f0820';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(stageText, infoX + badgeW * 0.5, padTop - 1 + badgeH * 0.53);
+
+    // Boss Name
+    ctx.font = `900 ${nameFont}px system-ui, "PingFang SC", sans-serif`;
+    ctx.fillStyle = '#fff8e6';
+    ctx.textAlign = 'left';
+    ctx.fillText(tpl.name, infoX + badgeW + 5, padTop - 1 + badgeH * 0.52);
+
+    // HP text (right-aligned, adapts cleanly on compact boards)
+    if (infoW >= 92) {
+      ctx.font = `800 ${smallFont}px ui-monospace, SFMono-Regular, system-ui, sans-serif`;
+      ctx.fillStyle = boss.hitFlash > 0.2 ? '#ffffff' : 'rgba(255, 232, 175, 0.88)';
+      ctx.textAlign = 'right';
+      const hpStr =
+        infoW >= 122 ? `${Math.ceil(boss.hp)}/${boss.maxHp}` : `${Math.ceil(boss.hp)}`;
+      ctx.fillText(hpStr, infoX + infoW, padTop - 1 + badgeH * 0.52);
+    }
+
+    // Row 2: HP Bar (with lagging damage drain trail!)
+    const hpY = headerH * 0.45;
+    const hpH = Math.max(7, headerH * 0.165);
+    this.fillRoundRect(ctx, infoX, hpY, infoW, hpH, hpH * 0.5, 'rgba(8, 4, 20, 0.85)');
+
+    const dispRatio = Math.max(0, Math.min(1, boss.displayHp / Math.max(1, boss.maxHp)));
+    const hpRatio = Math.max(0, Math.min(1, boss.hp / Math.max(1, boss.maxHp)));
+    if (dispRatio > 0.002) {
+      this.fillRoundRect(
+        ctx,
+        infoX,
+        hpY,
+        Math.max(hpH, infoW * dispRatio),
+        hpH,
+        hpH * 0.5,
+        'rgba(255, 238, 175, 0.7)',
+      );
+    }
+    if (hpRatio > 0.002) {
+      const hpGrad = ctx.createLinearGradient(infoX, hpY, infoX + infoW, hpY);
+      hpGrad.addColorStop(0, '#e83b54');
+      hpGrad.addColorStop(0.55, '#ff7043');
+      hpGrad.addColorStop(1, '#ffd166');
+      this.fillRoundRect(
+        ctx,
+        infoX,
+        hpY,
+        Math.max(hpH, infoW * hpRatio),
+        hpH,
+        hpH * 0.5,
+        hpGrad,
+      );
+      // Glossy top sheen on HP bar
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
+      ctx.fillRect(infoX + 3, hpY + 1, Math.max(0, infoW * hpRatio - 6), Math.max(1.5, hpH * 0.32));
+    }
+    ctx.strokeStyle = 'rgba(245, 204, 102, 0.48)';
+    ctx.lineWidth = 1;
+    this.strokeRoundRect(ctx, infoX, hpY, infoW, hpH, hpH * 0.5);
+
+    // Row 3: Attack Countdown Bar (fills toward Ojama drop!)
+    const atkY = headerH * 0.72;
+    const atkH = Math.max(5.5, headerH * 0.115);
+    const chargeRatio =
+      boss.defeatTimer > 0
+        ? 0
+        : boss.pendingOjama > 0
+          ? 1
+          : Math.max(0, Math.min(1, 1 - boss.attackTimer / Math.max(1, boss.attackInterval)));
+    const urgent = boss.pendingOjama > 0 || chargeRatio > 0.78;
+    const urgentPulse = urgent ? 0.65 + 0.35 * Math.sin(elapsedMs * 0.018) : 1;
+
+    // Compact label on left of countdown bar
+    const lblFont = Math.max(8, Math.round(cs * 0.225));
+    ctx.font = `800 ${lblFont}px system-ui, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const atkLabel =
+      boss.defeatTimer > 0
+        ? '收卡成功!'
+        : boss.pendingOjama > 0
+          ? `毛玉×${boss.pendingOjama}`
+          : `干扰 ${(boss.attackTimer / 1000).toFixed(1)}s`;
+    ctx.fillStyle =
+      boss.defeatTimer > 0
+        ? '#ffe36e'
+        : urgent
+          ? `rgba(255, 138, 168, ${urgentPulse.toFixed(2)})`
+          : 'rgba(216, 204, 245, 0.8)';
+    ctx.fillText(atkLabel, infoX, atkY + atkH * 0.5);
+
+    const barOffsetX = Math.min(infoW * 0.44, Math.max(cs * 1.4, ctx.measureText(atkLabel).width + 6));
+    const barW = Math.max(24, infoW - barOffsetX);
+    const barX = infoX + barOffsetX;
+
+    this.fillRoundRect(ctx, barX, atkY, barW, atkH, atkH * 0.5, 'rgba(8, 4, 20, 0.82)');
+    if (chargeRatio > 0.01) {
+      const atkGrad = ctx.createLinearGradient(barX, atkY, barX + barW, atkY);
+      if (urgent) {
+        atkGrad.addColorStop(0, '#ff4d6d');
+        atkGrad.addColorStop(1, '#ffd166');
+      } else {
+        atkGrad.addColorStop(0, '#7c5cff');
+        atkGrad.addColorStop(1, '#c8d8ff');
+      }
+      ctx.save();
+      ctx.globalAlpha = urgentPulse;
+      this.fillRoundRect(
+        ctx,
+        barX,
+        atkY,
+        Math.max(atkH, barW * chargeRatio),
+        atkH,
+        atkH * 0.5,
+        atkGrad,
+      );
+      ctx.restore();
+    }
+    ctx.strokeStyle = urgent ? 'rgba(255, 118, 148, 0.65)' : 'rgba(200, 190, 240, 0.28)';
+    ctx.lineWidth = 0.9;
+    this.strokeRoundRect(ctx, barX, atkY, barW, atkH, atkH * 0.5);
+
+    // Bottom filigree divider between Boss Strip and board playfield
+    const divGrad = ctx.createLinearGradient(0, 0, width, 0);
+    divGrad.addColorStop(0, 'rgba(245, 200, 98, 0.25)');
+    divGrad.addColorStop(0.5, 'rgba(255, 224, 130, 0.88)');
+    divGrad.addColorStop(1, 'rgba(245, 200, 98, 0.25)');
+    ctx.fillStyle = divGrad;
+    ctx.fillRect(0, headerH - 1.5, width, 1.5);
+
+    ctx.restore();
+  }
+
+  private drawFumoBossPortrait(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    r: number,
+    boss: BossState,
+    elapsedMs: number,
+  ): void {
+    const tpl = boss.template;
+    const defeatRatio = boss.defeatTimer > 0 ? boss.defeatTimer / 1250 : 1;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    if (boss.defeatTimer > 0) {
+      ctx.globalAlpha = Math.max(0.2, defeatRatio);
+      const shrink = 0.72 + 0.28 * defeatRatio;
+      ctx.scale(shrink, shrink);
+    }
+
+    // Rotating Touhou spell circle ring behind Fumo portrait
+    ctx.save();
+    ctx.rotate(elapsedMs * 0.0014);
+    ctx.strokeStyle =
+      boss.pendingOjama > 0 ? '#ff6b8b' : tpl.primaryColor;
+    ctx.globalAlpha = 0.72;
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 1.08, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Circular medallion background
+    const medGrad = ctx.createRadialGradient(0, -r * 0.2, r * 0.1, 0, 0, r);
+    medGrad.addColorStop(0, 'rgba(46, 26, 82, 0.95)');
+    medGrad.addColorStop(1, 'rgba(18, 9, 36, 0.98)');
+    ctx.fillStyle = medGrad;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Character back accessories (wings / gap!)
+    if (tpl.id === 'cirno') {
+      // 6 translucent cyan ice-crystal wings
+      ctx.save();
+      ctx.fillStyle = 'rgba(130, 232, 255, 0.85)';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 0.7;
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 3; i++) {
+          const ang = side * (0.42 + i * 0.36);
+          ctx.save();
+          ctx.rotate(ang);
+          ctx.beginPath();
+          ctx.moveTo(side * r * 0.45, r * 0.1);
+          ctx.lineTo(side * r * 1.12, -r * 0.08 + i * r * 0.14);
+          ctx.lineTo(side * r * 0.62, r * 0.34);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+      ctx.restore();
+    } else if (tpl.id === 'remilia') {
+      // Cute dark crimson bat wings
+      ctx.fillStyle = '#3b102c';
+      ctx.strokeStyle = '#e53950';
+      ctx.lineWidth = 0.85;
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(side * r * 0.42, r * 0.12);
+        ctx.quadraticCurveTo(side * r * 0.98, -r * 0.28, side * r * 1.08, r * 0.16);
+        ctx.quadraticCurveTo(side * r * 0.84, r * 0.22, side * r * 0.72, r * 0.42);
+        ctx.quadraticCurveTo(side * r * 0.56, r * 0.32, side * r * 0.42, r * 0.35);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    } else if (tpl.id === 'yukari') {
+      // Iconic shadowy purple-crimson Yukari gap ribbon behind head
+      ctx.save();
+      ctx.fillStyle = '#1b0726';
+      ctx.strokeStyle = '#e03e52';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(0, r * 0.05, r * 1.02, r * 0.44, -0.18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Q-version Fumo plush bob hair back
+    ctx.fillStyle = tpl.hairColor;
+    ctx.beginPath();
+    ctx.arc(0, r * 0.02, r * 0.72, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Soft matte plush face cutout (warm cream Fumo face!)
+    ctx.fillStyle = '#fff2e6';
+    ctx.beginPath();
+    ctx.ellipse(0, r * 0.14, r * 0.58, r * 0.52, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Soft rosy blush puffs
+    ctx.fillStyle = 'rgba(255, 138, 158, 0.46)';
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.34, r * 0.26, r * 0.12, r * 0.07, 0, 0, Math.PI * 2);
+    ctx.ellipse(r * 0.34, r * 0.26, r * 0.12, r * 0.07, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Layered Fumo bangs resting over top of face
+    ctx.fillStyle = tpl.hairColor;
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.02, r * 0.66, Math.PI * 1.02, Math.PI * 1.98);
+    ctx.lineTo(r * 0.52, r * 0.06);
+    ctx.lineTo(r * 0.28, -r * 0.09);
+    ctx.lineTo(r * 0.08, r * 0.09);
+    ctx.lineTo(-r * 0.12, -r * 0.08);
+    ctx.lineTo(-r * 0.32, r * 0.08);
+    ctx.lineTo(-r * 0.52, r * 0.02);
+    ctx.closePath();
+    ctx.fill();
+
+    // Signature Headwear!
+    if (tpl.id === 'cirno') {
+      // Cirno pale-blue hair ribbon on top
+      ctx.fillStyle = '#a8ecff';
+      ctx.strokeStyle = '#1e78b8';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.26, -r * 0.62, r * 0.24, r * 0.14, -0.35, 0, Math.PI * 2);
+      ctx.ellipse(r * 0.26, -r * 0.62, r * 0.24, r * 0.14, 0.35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, -r * 0.6, r * 0.1, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (tpl.id === 'remilia' || tpl.id === 'yukari') {
+      // Frilly white Touhou mob cap + crimson bow!
+      ctx.fillStyle = '#fff5f8';
+      ctx.strokeStyle = 'rgba(180, 150, 190, 0.65)';
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.ellipse(0, -r * 0.54, r * 0.56, r * 0.26, 0, Math.PI, Math.PI * 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      // Red ribbon accent
+      ctx.fillStyle = tpl.ribbonColor;
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.18, -r * 0.56, r * 0.15, r * 0.09, -0.25, 0, Math.PI * 2);
+      ctx.ellipse(r * 0.18, -r * 0.56, r * 0.15, r * 0.09, 0.25, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (tpl.id === 'suika') {
+      // Two curved Suika oni horns with gold ribbons!
+      ctx.fillStyle = '#ffe9cc';
+      ctx.strokeStyle = '#994b1a';
+      ctx.lineWidth = 0.95;
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(side * r * 0.28, -r * 0.44);
+        ctx.quadraticCurveTo(side * r * 0.52, -r * 0.94, side * r * 0.72, -r * 0.86);
+        ctx.quadraticCurveTo(side * r * 0.56, -r * 0.6, side * r * 0.44, -r * 0.36);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // Little gold ribbon around horn base
+        ctx.fillStyle = '#f5b82e';
+        ctx.beginPath();
+        ctx.arc(side * r * 0.38, -r * 0.52, r * 0.09, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffe9cc';
+      }
+    }
+
+    // Authentic Fumo Embroidered Eyes & Expressions!
+    const ex = r * 0.22;
+    const ey = r * 0.16;
+    const blinking = (elapsedMs % 4200) > 4060;
+
+    if (boss.defeatTimer > 0) {
+      // Dizzy × × defeated Fumo eyes
+      ctx.strokeStyle = '#2d1a24';
+      ctx.lineWidth = Math.max(1.4, r * 0.09);
+      ctx.lineCap = 'round';
+      for (const side of [-1, 1]) {
+        const s = r * 0.11;
+        ctx.beginPath();
+        ctx.moveTo(side * ex - s, ey - s);
+        ctx.lineTo(side * ex + s, ey + s);
+        ctx.moveTo(side * ex + s, ey - s);
+        ctx.lineTo(side * ex - s, ey + s);
+        ctx.stroke();
+      }
+    } else if (boss.hitFlash > 0.22) {
+      // Wincing > < hurt Fumo eyes
+      ctx.strokeStyle = '#2d1a24';
+      ctx.lineWidth = Math.max(1.4, r * 0.09);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-ex - r * 0.1, ey - r * 0.09);
+      ctx.lineTo(-ex + r * 0.08, ey);
+      ctx.lineTo(-ex - r * 0.1, ey + r * 0.09);
+      ctx.moveTo(ex + r * 0.1, ey - r * 0.09);
+      ctx.lineTo(ex - r * 0.08, ey);
+      ctx.lineTo(ex + r * 0.1, ey + r * 0.09);
+      ctx.stroke();
+    } else if (blinking) {
+      ctx.strokeStyle = '#2d1a24';
+      ctx.lineWidth = Math.max(1.3, r * 0.085);
+      ctx.lineCap = 'round';
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(side * ex - r * 0.11, ey);
+        ctx.lineTo(side * ex + r * 0.11, ey);
+        ctx.stroke();
+      }
+    } else {
+      // Classic Fumo oval embroidered eyes!
+      for (const side of [-1, 1]) {
+        ctx.fillStyle = '#24141d';
+        ctx.beginPath();
+        ctx.ellipse(side * ex, ey, r * 0.125, r * 0.15, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = tpl.eyeColor;
+        ctx.beginPath();
+        ctx.ellipse(side * ex, ey + r * 0.025, r * 0.092, r * 0.105, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(side * ex - r * 0.035, ey - r * 0.045, r * 0.045, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Iconic minimalist Fumo mouth (ᗜˬᗜ / ᗜ‿ᗜ / ᗜ_ᗜ / ᗜ▽ᗜ)
+    ctx.strokeStyle = '#3b212a';
+    ctx.lineWidth = Math.max(1.1, r * 0.068);
+    ctx.lineCap = 'round';
+    const my = r * 0.36;
+    if (boss.defeatTimer > 0 || boss.hitFlash > 0.22) {
+      // Wavy O / wince mouth
+      ctx.beginPath();
+      ctx.arc(0, my + r * 0.02, r * 0.07, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (tpl.id === 'suika') {
+      // Cheerful open grin
+      ctx.fillStyle = '#e8687a';
+      ctx.beginPath();
+      ctx.arc(0, my - r * 0.02, r * 0.12, 0, Math.PI);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (tpl.id === 'yukari') {
+      // Serene cat/flat smile
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.1, my);
+      ctx.quadraticCurveTo(0, my + r * 0.06, r * 0.1, my);
+      ctx.stroke();
+    } else {
+      // Smug Fumo ᗜˬᗜ smile
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.12, my - r * 0.02);
+      ctx.quadraticCurveTo(0, my + r * 0.1, r * 0.12, my - r * 0.02);
+      ctx.stroke();
+    }
+
+    // White hit flash overlay when struck by Danmaku
+    if (boss.hitFlash > 0.05) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${(boss.hitFlash * 0.55).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Crisp gold outer medallion rim
+    ctx.strokeStyle = boss.attackFlash > 0.2 ? '#ff6b8b' : 'rgba(255, 224, 130, 0.85)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  private drawPendingOjamaIndicators(
+    ctx: CanvasRenderingContext2D,
+    headerH: number,
+    topLineY: number,
+    cs: number,
+    boss: BossState,
+    elapsedMs: number,
+  ): void {
+    const cy = headerH + (topLineY - headerH) * 0.5;
+    const pulse = 0.65 + 0.35 * Math.sin(elapsedMs * 0.016);
+    for (const c of boss.pendingCols) {
+      const cx = c * cs + cs * 0.5;
+      this.drawOjamaOrb(ctx, cx, cy, cs * 0.22 * (0.9 + 0.14 * pulse), {
+        scaleX: 1,
+        scaleY: 1,
+        alpha: 0.72 * pulse,
+        shattering: false,
+        flashWhite: 0.2 * pulse,
+      });
+    }
+  }
+
+  /**
+   * Translucent 「阻碍毛玉 (Ojama)」 Orb — unmistakable silvery-lavender frosted
+   * Touhou Kedama spirit ball that never color-matches and shatters adjacent to clears!
+   */
+  private drawOjamaOrb(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    r: number,
+    opts: {
+      scaleX: number;
+      scaleY: number;
+      alpha: number;
+      shattering: boolean;
+      flashWhite: number;
+    },
+  ): void {
+    if (opts.scaleX <= 0.02 || opts.scaleY <= 0.02) return;
+    ctx.save();
+    ctx.globalAlpha = opts.alpha;
+    ctx.translate(cx, cy);
+    ctx.scale(opts.scaleX, opts.scaleY);
+
+    // Subtle frosted outer aura
+    const aura = ctx.createRadialGradient(0, 0, r * 0.4, 0, 0, r * 1.24);
+    aura.addColorStop(0, 'rgba(210, 224, 255, 0.36)');
+    aura.addColorStop(1, 'rgba(180, 200, 240, 0)');
+    ctx.fillStyle = aura;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 1.24, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Translucent frosted glass / Kedama body
+    const bodyGrad = ctx.createRadialGradient(-r * 0.28, -r * 0.3, r * 0.08, 0, 0, r);
+    bodyGrad.addColorStop(0, 'rgba(246, 250, 255, 0.88)');
+    bodyGrad.addColorStop(0.5, 'rgba(184, 198, 228, 0.72)');
+    bodyGrad.addColorStop(0.88, 'rgba(116, 130, 170, 0.78)');
+    bodyGrad.addColorStop(1, 'rgba(78, 88, 126, 0.85)');
+    ctx.fillStyle = bodyGrad;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Delicate crystalline silver outline + tiny fluffy kedama top tuft
+    ctx.strokeStyle = 'rgba(235, 244, 255, 0.76)';
+    ctx.lineWidth = Math.max(1.3, r * 0.095);
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.96, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Cute Kedama soft swirl inner reflection
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.lineWidth = Math.max(1, r * 0.075);
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.72, Math.PI * 1.1, Math.PI * 1.55);
+    ctx.stroke();
+
+    // Cute blank / shattering Kedama face (·_· or > <)
+    const ex = r * 0.27;
+    const ey = r * 0.08;
+    ctx.strokeStyle = 'rgba(54, 62, 96, 0.9)';
+    ctx.fillStyle = 'rgba(54, 62, 96, 0.9)';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(1.2, r * 0.095);
+
+    if (opts.shattering) {
+      ctx.beginPath();
+      ctx.moveTo(-ex - r * 0.12, ey - r * 0.1);
+      ctx.lineTo(-ex + r * 0.08, ey);
+      ctx.lineTo(-ex - r * 0.12, ey + r * 0.1);
+      ctx.moveTo(ex + r * 0.12, ey - r * 0.1);
+      ctx.lineTo(ex - r * 0.08, ey);
+      ctx.lineTo(ex + r * 0.12, ey + r * 0.1);
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(-ex, ey, Math.max(1.3, r * 0.1), 0, Math.PI * 2);
+      ctx.arc(ex, ey, Math.max(1.3, r * 0.1), 0, Math.PI * 2);
+      ctx.fill();
+      // Tiny horizontal sleepy mouth
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.11, ey + r * 0.2);
+      ctx.lineTo(r * 0.11, ey + r * 0.2);
+      ctx.stroke();
+    }
+
+    if (opts.flashWhite > 0.01) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${opts.flashWhite.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  private drawDanmakuOrbs(
+    ctx: CanvasRenderingContext2D,
+    topLineY: number,
+    cs: number,
+    engine: PuyoEngine,
+  ): void {
+    for (const orb of engine.danmakuOrbs) {
+      if (orb.progress < 0) continue;
+      const t = Math.min(1, orb.progress);
+      const omt = 1 - t;
+      const gx = omt * omt * orb.startX + 2 * omt * t * orb.ctrlX + t * t * orb.targetX;
+      const gy = omt * omt * orb.startY + 2 * omt * t * orb.ctrlY + t * t * orb.targetY;
+      const px = gx * cs;
+      const py = topLineY + gy * cs;
+      const rad = orb.radius * cs;
+
+      ctx.save();
+      // Luminous comet trail
+      if (orb.trail.length > 1) {
+        for (let i = 1; i < orb.trail.length; i++) {
+          const p0 = orb.trail[i - 1];
+          const p1 = orb.trail[i];
+          const frac = i / orb.trail.length;
+          ctx.strokeStyle = orb.color;
+          ctx.globalAlpha = frac * 0.68;
+          ctx.lineWidth = Math.max(1.5, rad * 1.15 * frac);
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(p0.x * cs, topLineY + p0.y * cs);
+          ctx.lineTo(p1.x * cs, topLineY + p1.y * cs);
+          ctx.stroke();
+        }
+      }
+
+      // Touhou glowing danmaku bullet (outer elemental halo + pure white core)
+      ctx.globalAlpha = 0.95;
+      const glow = ctx.createRadialGradient(px, py, rad * 0.15, px, py, rad * 1.9);
+      glow.addColorStop(0, '#ffffff');
+      glow.addColorStop(0.4, orb.color);
+      glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(px, py, rad * 1.9, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = orb.coreColor;
+      ctx.beginPath();
+      ctx.arc(px, py, rad * 0.58, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  private drawActiveSpellVfx(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    headerH: number,
+    topLineY: number,
+    cs: number,
+    vfx: ActiveSpellVfx,
+    elapsedMs: number,
+  ): void {
+    const p = Math.min(1, vfx.timer / Math.max(1, vfx.duration));
+    const fade = p < 0.7 ? 1 : Math.max(0, 1 - (p - 0.7) / 0.3);
+
+    ctx.save();
+
+    if (vfx.character === 'reimu' && vfx.targetRows) {
+      // 博丽灵梦 · 灵符「梦想封印」: Crimson-gold purification wave across top 2 occupied rows!
+      for (const r of vfx.targetRows) {
+        const y = this.rowToY(r);
+        const bandH = cs * (0.95 + Math.sin(p * Math.PI) * 0.22);
+        const cy = y + cs * 0.5;
+
+        const g = ctx.createLinearGradient(0, cy - bandH * 0.5, 0, cy + bandH * 0.5);
+        g.addColorStop(0, 'rgba(255, 76, 108, 0)');
+        g.addColorStop(0.28, `rgba(232, 59, 84, ${(0.72 * fade).toFixed(3)})`);
+        g.addColorStop(0.5, `rgba(255, 246, 200, ${(0.9 * fade).toFixed(3)})`);
+        g.addColorStop(0.72, `rgba(232, 59, 84, ${(0.72 * fade).toFixed(3)})`);
+        g.addColorStop(1, 'rgba(255, 76, 108, 0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, cy - bandH * 0.5, width, bandH);
+
+        // Sweeping crimson-white Yin-Yang homing orbs & ofuda talismans across the row
+        for (let i = 0; i < 4; i++) {
+          const ox = ((p * 1.65 + i * 0.25) % 1.2 - 0.1) * width;
+          const oy = cy + Math.sin(p * 12 + i * 1.9) * cs * 0.26;
+          ctx.save();
+          ctx.globalAlpha = fade * 0.92;
+          ctx.translate(ox, oy);
+          ctx.rotate(elapsedMs * 0.01 + i);
+          const or = cs * 0.28;
+          ctx.fillStyle = '#fff5f7';
+          ctx.beginPath();
+          ctx.arc(0, 0, or, -Math.PI / 2, Math.PI / 2);
+          ctx.fill();
+          ctx.fillStyle = '#d91e3b';
+          ctx.beginPath();
+          ctx.arc(0, 0, or, Math.PI / 2, (Math.PI * 3) / 2);
+          ctx.fill();
+          ctx.strokeStyle = '#ffe38e';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.arc(0, 0, or, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    } else if (vfx.character === 'marisa') {
+      // 雾雨魔理沙 · 魔炮「极限火花」: Dazzling full-height rainbow Master Spark through cols 2 & 3!
+      const beamCenterX = 3 * cs; // Exact seam between col 2 and col 3
+      const baseBeamW = cs * 2.08;
+      const chargeT = Math.min(1, vfx.timer / Math.max(1, vfx.impactMs));
+
+      // Spinning golden Hakkero ignition circle at bottom of cols 2 & 3
+      ctx.save();
+      ctx.translate(beamCenterX, height - cs * 0.65);
+      ctx.rotate(elapsedMs * 0.008);
+      ctx.globalAlpha = fade * 0.95;
+      const hr = cs * (0.65 + chargeT * 0.62);
+      ctx.strokeStyle = '#ffe980';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.arc(0, 0, hr, 0, Math.PI * 2);
+      ctx.stroke();
+      this.traceStar(ctx, 0, 0, 8, hr * 0.92, hr * 0.45);
+      ctx.stroke();
+      ctx.restore();
+
+      if (vfx.timer >= vfx.impactMs * 0.65) {
+        const beamPhase = Math.min(1, (vfx.timer - vfx.impactMs * 0.65) / 110);
+        const pulseW = baseBeamW * (0.9 + 0.14 * Math.sin(elapsedMs * 0.06)) * beamPhase;
+        const beamTop = headerH > 0 ? headerH * 0.25 : 0;
+
+        // Outer blazing rainbow Master Spark prism aura!
+        const prism = ctx.createLinearGradient(
+          beamCenterX - pulseW * 0.72,
+          0,
+          beamCenterX + pulseW * 0.72,
+          0,
+        );
+        prism.addColorStop(0, 'rgba(168, 85, 247, 0)');
+        prism.addColorStop(0.14, `rgba(168, 85, 247, ${(0.65 * fade).toFixed(3)})`);
+        prism.addColorStop(0.28, `rgba(41, 182, 246, ${(0.82 * fade).toFixed(3)})`);
+        prism.addColorStop(0.42, `rgba(255, 224, 92, ${(0.95 * fade).toFixed(3)})`);
+        prism.addColorStop(0.5, `rgba(255, 255, 255, ${(1.0 * fade).toFixed(3)})`);
+        prism.addColorStop(0.58, `rgba(255, 224, 92, ${(0.95 * fade).toFixed(3)})`);
+        prism.addColorStop(0.72, `rgba(255, 107, 139, ${(0.82 * fade).toFixed(3)})`);
+        prism.addColorStop(0.86, `rgba(168, 85, 247, ${(0.65 * fade).toFixed(3)})`);
+        prism.addColorStop(1, 'rgba(168, 85, 247, 0)');
+
+        ctx.fillStyle = prism;
+        ctx.fillRect(beamCenterX - pulseW * 0.72, beamTop, pulseW * 1.44, height - beamTop);
+
+        // Blinding white laser core
+        const coreW = pulseW * 0.44;
+        ctx.fillStyle = `rgba(255, 255, 255, ${(0.92 * fade).toFixed(3)})`;
+        ctx.fillRect(beamCenterX - coreW * 0.5, beamTop, coreW, height - beamTop);
+
+        // Upward shooting star streaks inside Master Spark
+        ctx.fillStyle = `rgba(255, 252, 210, ${(0.88 * fade).toFixed(3)})`;
+        for (let i = 0; i < 9; i++) {
+          const sx = beamCenterX + Math.sin(i * 2.7 + elapsedMs * 0.01) * (pulseW * 0.36);
+          const sy = height - (((elapsedMs * 0.9 + i * 75) % (height - beamTop)) + 10);
+          this.traceStar(ctx, sx, sy, 5, cs * 0.24, cs * 0.1);
+          ctx.fill();
+        }
+      }
+    } else if (vfx.character === 'patchouli') {
+      // 帕秋莉 · 七曜「贤者之石」: Grand 7-element alchemy circle + transmutation beams!
+      const centerX = width * 0.5;
+      const centerY = topLineY + (height - topLineY) * 0.5;
+      const circleR = Math.min(width * 0.4, (height - topLineY) * 0.25) * (0.75 + p * 0.32);
+      const sevenColors = [
+        '#ff6b8b', // Fire
+        '#4ecbff', // Water
+        '#57e393', // Wood
+        '#ffe066', // Metal
+        '#d9965b', // Earth
+        '#ffd480', // Sun
+        '#d896ff', // Moon
+      ];
+
+      ctx.save();
+      ctx.globalAlpha = fade * 0.88;
+      ctx.translate(centerX, centerY);
+      ctx.rotate(elapsedMs * 0.0028);
+
+      // Arcane double alchemy ring
+      ctx.strokeStyle = '#e5b8ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, circleR, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = '#ffd97d';
+      ctx.beginPath();
+      ctx.arc(0, 0, circleR * 0.76, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // 7 glowing orbiting elemental jewels
+      for (let i = 0; i < 7; i++) {
+        const a = (Math.PI * 2 * i) / 7;
+        const jx = Math.cos(a) * circleR;
+        const jy = Math.sin(a) * circleR;
+        ctx.fillStyle = sevenColors[i];
+        ctx.beginPath();
+        ctx.arc(jx, jy, cs * 0.16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(jx, jy, cs * 0.07, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // Luminous transmutation rays into every transformed cell!
+      if (vfx.transformedCells && vfx.toColor !== undefined) {
+        const destLight = PUYO_THEMES[vfx.toColor].light;
+        for (const tc of vfx.transformedCells) {
+          const tx = tc.col * cs + cs * 0.5;
+          const ty = this.rowToY(tc.row) + cs * 0.5;
+          ctx.save();
+          ctx.globalAlpha = fade * 0.72;
+          ctx.strokeStyle = destLight;
+          ctx.lineWidth = Math.max(1.5, cs * 0.08 * (1 - p * 0.5));
+          ctx.beginPath();
+          ctx.moveTo(centerX, centerY);
+          ctx.lineTo(tx, ty);
+          ctx.stroke();
+
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.arc(tx, ty, cs * (0.32 + p * 0.45), 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * Crisp 「Spell Card Bonus! 收卡成功」 victory flash overlay upon defeating a BOSS!
+   */
+  private drawBossBonusBanner(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    topLineY: number,
+    cs: number,
+    engine: PuyoEngine,
+  ): void {
+    const b = engine.bossBonusBanner;
+    if (!b) return;
+    const t = b.timer / b.duration;
+    let alpha = 1;
+    let scale = 1;
+    if (t < 0.12) {
+      const p = t / 0.12;
+      alpha = p;
+      scale = 0.8 + 0.25 * (1 - Math.pow(1 - p, 3));
+    } else if (t < 0.2) {
+      scale = 1.05 - ((t - 0.12) / 0.08) * 0.05;
+    } else if (t > 0.78) {
+      alpha = Math.max(0, 1 - (t - 0.78) / 0.22);
+    }
+
+    const cy = topLineY + (height - topLineY) * 0.3;
+    const h = Math.max(62, cs * 2.15);
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(width * 0.5, cy);
+    ctx.scale(scale, scale);
+
+    // Radiant gold-crimson victory ribbon
+    ctx.shadowColor = '#f5b82e';
+    ctx.shadowBlur = 22;
+    const bg = ctx.createLinearGradient(-width * 0.52, 0, width * 0.52, 0);
+    bg.addColorStop(0, 'rgba(32, 8, 28, 0.92)');
+    bg.addColorStop(0.5, 'rgba(78, 18, 42, 0.97)');
+    bg.addColorStop(1, 'rgba(32, 8, 28, 0.92)');
+    ctx.fillStyle = bg;
+    ctx.fillRect(-width * 0.52, -h * 0.5, width * 1.04, h);
+    ctx.shadowBlur = 0;
+
+    // Double golden trim lines
+    ctx.fillStyle = '#ffe078';
+    ctx.fillRect(-width * 0.52, -h * 0.5, width * 1.04, 3);
+    ctx.fillRect(-width * 0.52, h * 0.5 - 3, width * 1.04, 3);
+
+    // Kicker: Spell Card Bonus!
+    const kickerFont = Math.max(9.5, Math.round(cs * 0.28));
+    ctx.font = `900 ${kickerFont}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffe588';
+    ctx.fillText('★ SPELL CARD BONUS! ★', 0, -h * 0.28);
+
+    // Main Bold Title: 收卡成功！
+    const mainFont = Math.max(15, Math.round(cs * 0.5));
+    ctx.font = `900 ${mainFont}px "Noto Serif SC", "Songti SC", system-ui, serif`;
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = 'rgba(24, 6, 18, 0.9)';
+    ctx.strokeText('收卡成功！', 0, h * 0.04);
+    ctx.fillStyle = '#fffef2';
+    ctx.fillText('收卡成功！', 0, h * 0.04);
+
+    // Sub line: Boss defeated + Bonus score
+    const subFont = Math.max(9.5, Math.round(cs * 0.27));
+    ctx.font = `800 ${subFont}px system-ui, sans-serif`;
+    ctx.fillStyle = '#ffd166';
+    ctx.fillText(
+      `击破 ${b.bossName} · +${b.bonus.toLocaleString()} PTS`,
+      0,
+      h * 0.32,
+    );
+
+    ctx.restore();
+  }
+
+  private fillRoundRect(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    r: number,
+    fill: string | CanvasGradient,
+  ): void {
+    const rad = Math.min(r, w * 0.5, h * 0.5);
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  private strokeRoundRect(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    r: number,
+  ): void {
+    const rad = Math.min(r, w * 0.5, h * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+    ctx.stroke();
   }
 
   // ==================== NEXT PREVIEW CANVAS ====================

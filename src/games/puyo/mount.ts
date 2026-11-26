@@ -1,14 +1,17 @@
 import type { GameInstance, GameMountContext } from '../../types/game';
 import { PuyoAudio } from './audio';
 import { PuyoEngine } from './engine';
-import { BOARD_ASPECT_ROWS, PuyoRenderer } from './renderer';
+import { PuyoRenderer, getBoardAspectRows } from './renderer';
 import { PUYO_STYLES } from './styles';
 import {
+  CHARACTERS,
+  CHARACTER_ORDER,
   COLS,
+  CharacterId,
   DIFFICULTIES,
   DifficultyId,
+  GameMode,
   HudSnapshot,
-  PUYO_THEMES,
 } from './types';
 
 function escapeHtml(text: string): string {
@@ -16,6 +19,27 @@ function escapeHtml(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+function getCharacterEmblemSvg(charId: CharacterId): string {
+  if (charId === 'reimu') {
+    return `<svg viewBox="0 0 28 28" width="22" height="22" aria-hidden="true">
+      <circle cx="14" cy="14" r="11.5" fill="#fff5f7" stroke="#ff9cab" stroke-width="1.4"/>
+      <path d="M14 2.5 A11.5 11.5 0 0 1 14 25.5 A5.75 5.75 0 0 1 14 14 A5.75 5.75 0 0 0 14 2.5 Z" fill="#d9223f"/>
+      <circle cx="14" cy="8.25" r="2.2" fill="#d9223f"/>
+      <circle cx="14" cy="19.75" r="2.2" fill="#fff5f7"/>
+    </svg>`;
+  }
+  if (charId === 'marisa') {
+    return `<svg viewBox="0 0 28 28" width="22" height="22" aria-hidden="true">
+      <polygon points="14,2 17.4,9.6 25.6,10.5 19.4,16 21.1,24.2 14,20 6.9,24.2 8.6,16 2.4,10.5 10.6,9.6" fill="#ffd84d" stroke="#fff6bf" stroke-width="1.3" stroke-linejoin="round"/>
+      <circle cx="14" cy="14" r="3" fill="#fffdf0"/>
+    </svg>`;
+  }
+  return `<svg viewBox="0 0 28 28" width="22" height="22" aria-hidden="true">
+    <path d="M17.5 4.2 A10.5 10.5 0 1 0 17.5 23.8 A8.2 8.2 0 1 1 17.5 4.2 Z" fill="#d896ff" stroke="#f6e0ff" stroke-width="1.2"/>
+    <polygon points="20.2,9.2 21.3,12 24.2,13 21.3,14 20.2,16.8 19.1,14 16.2,13 19.1,12" fill="#fff3ff"/>
+  </svg>`;
 }
 
 export function mountPuyoGame(ctx: GameMountContext): GameInstance {
@@ -28,25 +52,28 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
   const stage = document.createElement('div');
   stage.className = 'puyo-stage';
 
-  const orbChipsHtml = PUYO_THEMES.map(
-    (t) =>
-      `<span class="puyo-orb-chip" title="${escapeHtml(t.character)} · ${escapeHtml(t.name)}" style="background:radial-gradient(circle at 35% 30%, ${t.light}, ${t.base} 55%, ${t.dark});"></span>`,
-  ).join('');
-
-  const diffListHtml = (['easy', 'normal', 'lunatic'] as DifficultyId[])
+  const diffPillsHtml = (['easy', 'normal', 'lunatic'] as DifficultyId[])
     .map((id) => {
       const d = DIFFICULTIES[id];
       return `
-        <button type="button" class="puyo-diff-opt${id === 'normal' ? ' selected' : ''}" data-diff="${id}">
-          <div>
-            <div class="puyo-diff-title">${escapeHtml(d.name)} · ${escapeHtml(d.shortLabel)}</div>
-            <div class="puyo-diff-desc">${escapeHtml(d.subtitle)}</div>
-          </div>
-          <span class="puyo-diff-tag" style="background:${d.badgeColor};">${d.colorCount}色</span>
+        <button type="button" class="puyo-pill-opt${id === 'normal' ? ' selected' : ''}" data-diff="${id}">
+          <span class="puyo-pill-main">${escapeHtml(d.shortLabel)}</span>
+          <span class="puyo-pill-dot" style="background:${d.badgeColor};">${d.colorCount}色</span>
         </button>
       `;
     })
     .join('');
+
+  const charPillsHtml = CHARACTER_ORDER.map((id) => {
+    const ch = CHARACTERS[id];
+    return `
+      <button type="button" class="puyo-char-opt${id === 'reimu' ? ' selected' : ''}" data-char="${id}" style="--char-accent:${ch.primaryColor};--char-glow:${ch.secondaryColor};">
+        <span class="puyo-char-emblem">${getCharacterEmblemSvg(id)}</span>
+        <span class="puyo-char-name">${escapeHtml(ch.shortName)}</span>
+        <span class="puyo-char-tag">${escapeHtml(ch.skillTag)}</span>
+      </button>
+    `;
+  }).join('');
 
   stage.innerHTML = `
     <div class="puyo-main">
@@ -56,53 +83,41 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
       <aside class="puyo-sidebar">
         <div class="puyo-panel">
           <div class="puyo-panel-label">
-            <span>NEXT 灵珠</span>
+            <span>NEXT</span>
             <span class="puyo-diff-pill" data-el="diff-pill">Normal</span>
           </div>
           <canvas class="puyo-preview-canvas" aria-label="下组预告"></canvas>
         </div>
 
-        <div class="puyo-panel">
-          <div class="puyo-stats-grid">
-            <div class="puyo-stat-box wide">
-              <span class="puyo-stat-k">当前得分</span>
-              <span class="puyo-stat-v gold" data-el="score">0</span>
-            </div>
-            <div class="puyo-stat-box">
-              <div class="puyo-stat-k">当前连锁</div>
-              <div class="puyo-stat-v chain" data-el="chain">0</div>
-            </div>
-            <div class="puyo-stat-box">
-              <div class="puyo-stat-k">最高连锁</div>
-              <div class="puyo-stat-v" data-el="max-chain">0</div>
-            </div>
-            <div class="puyo-stat-box">
-              <div class="puyo-stat-k">速度等级</div>
-              <div class="puyo-stat-v" data-el="speed">LV.1</div>
-            </div>
-            <div class="puyo-stat-box">
-              <div class="puyo-stat-k">已消除</div>
-              <div class="puyo-stat-v" data-el="cleared">0</div>
+        <div class="puyo-panel puyo-spell-panel" data-el="spell-panel">
+          <div class="puyo-spell-head">
+            <span class="puyo-spell-emblem" data-el="char-emblem">${getCharacterEmblemSvg('reimu')}</span>
+            <div class="puyo-spell-meta">
+              <span class="puyo-spell-char" data-el="char-name">灵梦</span>
+              <span class="puyo-spell-pct" data-el="spirit-pct">0%</span>
             </div>
           </div>
-        </div>
-
-        <div class="puyo-panel puyo-desktop-pad">
-          <div class="puyo-panel-label"><span>快捷按键</span></div>
-          <div class="puyo-pad">
-            <button type="button" class="puyo-btn-ctrl" data-action="ccw" title="逆时针旋转 (Z/Q)">↺</button>
-            <button type="button" class="puyo-btn-ctrl accent" data-action="hard" title="硬降落位 (Space)">⚡</button>
-            <button type="button" class="puyo-btn-ctrl" data-action="cw" title="顺时针旋转 (X/↑)">↻</button>
-            <button type="button" class="puyo-btn-ctrl" data-action="left" title="左移 (←/A)">◀</button>
-            <button type="button" class="puyo-btn-ctrl" data-action="down" title="缓降 (↓/S)">▼</button>
-            <button type="button" class="puyo-btn-ctrl" data-action="right" title="右移 (→/D)">▶</button>
+          <div class="puyo-spirit-track" aria-label="灵力槽">
+            <div class="puyo-spirit-fill" data-el="spirit-fill" style="width:0%"></div>
           </div>
+          <button type="button" class="puyo-spell-btn" data-btn="spell" disabled>
+            <span class="puyo-spell-btn-title" data-el="spell-title">梦想封印</span>
+            <span class="puyo-spell-btn-key" data-el="spell-key">充能中</span>
+          </button>
         </div>
 
-        <div class="puyo-panel puyo-desktop-keys">
-          <div class="puyo-keys-hint">
-            <kbd>←</kbd><kbd>→</kbd> 移动 · <kbd>↓</kbd> 缓降 · <kbd>Space</kbd> 硬降<br/>
-            <kbd>X</kbd>/<kbd>↑</kbd> 顺转 · <kbd>Z</kbd>/<kbd>Q</kbd> 逆转 · 窄道双按180°翻转
+        <div class="puyo-pills-panel">
+          <div class="puyo-pill-stat">
+            <span class="puyo-stat-k">连锁</span>
+            <span class="puyo-stat-v chain" data-el="chain">0</span>
+          </div>
+          <div class="puyo-pill-stat">
+            <span class="puyo-stat-k">速度</span>
+            <span class="puyo-stat-v" data-el="speed">LV.1</span>
+          </div>
+          <div class="puyo-pill-stat wide" data-el="stage-pill">
+            <span class="puyo-stat-k" data-el="stage-k">异变</span>
+            <span class="puyo-stat-v gold" data-el="stage-v">S1 · 琪露诺</span>
           </div>
         </div>
       </aside>
@@ -115,36 +130,50 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
         <button type="button" class="puyo-btn-ctrl" data-action="right" aria-label="右移">▶</button>
       </div>
       <div class="puyo-mobile-group">
+        <button type="button" class="puyo-btn-ctrl spell-mini" data-action="spell" data-el="mobile-spell" aria-label="释放符卡">✦</button>
         <button type="button" class="puyo-btn-ctrl accent" data-action="hard" aria-label="硬降">⚡</button>
         <button type="button" class="puyo-btn-ctrl" data-action="ccw" aria-label="逆转">↺</button>
         <button type="button" class="puyo-btn-ctrl" data-action="cw" aria-label="顺转">↻</button>
       </div>
     </div>
 
-    <!-- Start / Difficulty Overlay -->
+    <!-- Streamlined Start Menu Overlay -->
     <div class="puyo-overlay" data-overlay="menu">
       <div class="puyo-modal">
-        <div class="puyo-modal-eyebrow">Gensokyo Spirit Puyo</div>
         <h2 class="puyo-modal-title">魔法森林噗哟噗哟</h2>
-        <p class="puyo-modal-sub">将 4 颗同色幻想乡灵珠连结消除，触发多段连锁与华丽符卡宣言！</p>
-        <div class="puyo-orb-row">${orbChipsHtml}</div>
-        <div class="puyo-diff-list">${diffListHtml}</div>
+
+        <div class="puyo-section-label">模式</div>
+        <div class="puyo-mode-row">
+          <button type="button" class="puyo-mode-opt selected" data-mode="boss">
+            <span class="puyo-mode-name">异变讨伐</span>
+            <span class="puyo-mode-badge">BOSS</span>
+          </button>
+          <button type="button" class="puyo-mode-opt" data-mode="classic">
+            <span class="puyo-mode-name">经典无尽</span>
+            <span class="puyo-mode-badge subtle">无尽</span>
+          </button>
+        </div>
+
+        <div class="puyo-section-label">难度</div>
+        <div class="puyo-diff-row">${diffPillsHtml}</div>
+
+        <div class="puyo-section-label">自机 · 主动符卡</div>
+        <div class="puyo-char-row">${charPillsHtml}</div>
+
         <div class="puyo-action-row">
-          <button type="button" class="puyo-cta" data-btn="start">开始连锁挑战</button>
+          <button type="button" class="puyo-cta" data-btn="start">开始异变讨伐</button>
         </div>
       </div>
     </div>
 
-    <!-- Pause Overlay -->
+    <!-- Pause Overlay (preserves [data-overlay="pause"] + .hidden contract) -->
     <div class="puyo-overlay hidden" data-overlay="pause">
-      <div class="puyo-modal">
-        <div class="puyo-modal-eyebrow">Boundary Paused</div>
+      <div class="puyo-modal compact">
         <h2 class="puyo-modal-title">结界暂停中</h2>
-        <p class="puyo-modal-sub">灵珠已静滞，随时可以继续消除或重新开局。</p>
         <div class="puyo-action-row">
           <button type="button" class="puyo-cta" data-btn="resume">继续游戏</button>
           <button type="button" class="puyo-cta secondary" data-btn="pause-restart">重新开始</button>
-          <button type="button" class="puyo-cta secondary" data-btn="pause-menu">切换难度</button>
+          <button type="button" class="puyo-cta secondary" data-btn="pause-menu">更换配置</button>
         </div>
       </div>
     </div>
@@ -152,9 +181,8 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
     <!-- Game Over Overlay -->
     <div class="puyo-overlay hidden" data-overlay="gameover">
       <div class="puyo-modal">
-        <div class="puyo-modal-eyebrow">Spirit Overflow</div>
-        <h2 class="puyo-modal-title">灵力满溢 · 结界终结</h2>
-        <p class="puyo-modal-sub" data-el="go-subtitle">封印格被填满，本次魔法实验结束！</p>
+        <h2 class="puyo-modal-title">结界终结</h2>
+        <p class="puyo-modal-sub" data-el="go-subtitle"></p>
         <div class="puyo-summary-grid">
           <div class="puyo-summary-item">
             <div class="puyo-stat-k">最终得分</div>
@@ -169,13 +197,13 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
             <div class="puyo-stat-v chain" data-el="go-max-chain">0 连锁</div>
           </div>
           <div class="puyo-summary-item">
-            <div class="puyo-stat-k">消除 / 全消</div>
-            <div class="puyo-stat-v" data-el="go-cleared">0 / 0</div>
+            <div class="puyo-stat-k" data-el="go-fourth-k">讨伐进度</div>
+            <div class="puyo-stat-v" data-el="go-fourth-v">Stage 1</div>
           </div>
         </div>
         <div class="puyo-action-row">
           <button type="button" class="puyo-cta" data-btn="retry">再来一局 (R)</button>
-          <button type="button" class="puyo-cta secondary" data-btn="go-diff">切换难度</button>
+          <button type="button" class="puyo-cta secondary" data-btn="go-diff">更换配置</button>
           <button type="button" class="puyo-cta secondary" data-btn="go-hub">返回大厅</button>
         </div>
       </div>
@@ -187,12 +215,22 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
   // Element references
   const boardCanvas = stage.querySelector<HTMLCanvasElement>('.puyo-board-canvas')!;
   const previewCanvas = stage.querySelector<HTMLCanvasElement>('.puyo-preview-canvas')!;
-  const scoreEl = stage.querySelector<HTMLElement>('[data-el="score"]')!;
   const chainEl = stage.querySelector<HTMLElement>('[data-el="chain"]')!;
-  const maxChainEl = stage.querySelector<HTMLElement>('[data-el="max-chain"]')!;
   const speedEl = stage.querySelector<HTMLElement>('[data-el="speed"]')!;
-  const clearedEl = stage.querySelector<HTMLElement>('[data-el="cleared"]')!;
   const diffPillEl = stage.querySelector<HTMLElement>('[data-el="diff-pill"]')!;
+  const stageKeyEl = stage.querySelector<HTMLElement>('[data-el="stage-k"]')!;
+  const stageValEl = stage.querySelector<HTMLElement>('[data-el="stage-v"]')!;
+
+  const spellPanelEl = stage.querySelector<HTMLElement>('[data-el="spell-panel"]')!;
+  const charEmblemEl = stage.querySelector<HTMLElement>('[data-el="char-emblem"]')!;
+  const charNameEl = stage.querySelector<HTMLElement>('[data-el="char-name"]')!;
+  const spiritPctEl = stage.querySelector<HTMLElement>('[data-el="spirit-pct"]')!;
+  const spiritFillEl = stage.querySelector<HTMLElement>('[data-el="spirit-fill"]')!;
+  const spellBtnEl = stage.querySelector<HTMLButtonElement>('[data-btn="spell"]')!;
+  const spellTitleEl = stage.querySelector<HTMLElement>('[data-el="spell-title"]')!;
+  const spellKeyEl = stage.querySelector<HTMLElement>('[data-el="spell-key"]')!;
+  const mobileSpellEl = stage.querySelector<HTMLButtonElement>('[data-el="mobile-spell"]')!;
+  const startBtnEl = stage.querySelector<HTMLButtonElement>('[data-btn="start"]')!;
 
   const menuOverlay = stage.querySelector<HTMLElement>('[data-overlay="menu"]')!;
   const pauseOverlay = stage.querySelector<HTMLElement>('[data-overlay="pause"]')!;
@@ -200,11 +238,18 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
   const goScoreEl = stage.querySelector<HTMLElement>('[data-el="go-score"]')!;
   const goBestEl = stage.querySelector<HTMLElement>('[data-el="go-best"]')!;
   const goMaxChainEl = stage.querySelector<HTMLElement>('[data-el="go-max-chain"]')!;
-  const goClearedEl = stage.querySelector<HTMLElement>('[data-el="go-cleared"]')!;
+  const goFourthKeyEl = stage.querySelector<HTMLElement>('[data-el="go-fourth-k"]')!;
+  const goFourthValEl = stage.querySelector<HTMLElement>('[data-el="go-fourth-v"]')!;
   const goSubtitleEl = stage.querySelector<HTMLElement>('[data-el="go-subtitle"]')!;
 
+  const modeButtons = Array.from(
+    stage.querySelectorAll<HTMLButtonElement>('[data-mode]'),
+  );
   const diffButtons = Array.from(
     stage.querySelectorAll<HTMLButtonElement>('[data-diff]'),
+  );
+  const charButtons = Array.from(
+    stage.querySelectorAll<HTMLButtonElement>('[data-char]'),
   );
 
   // Core instances
@@ -212,21 +257,95 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
   const renderer = new PuyoRenderer();
 
   let lastQueueSig = '';
+  let lastRenderedMode: GameMode | null = null;
+  let lastEmblemChar: CharacterId | null = null;
   let destroyed = false;
 
+  const updateLayoutSize = (): void => {
+    if (destroyed) return;
+    const w = ctx.container.clientWidth || 640;
+    const h = ctx.container.clientHeight || 560;
+    const isTouchDevice =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+    const isCompact = w < 540;
+    const showMobilePad = isCompact || isTouchDevice;
+
+    stage.classList.toggle('compact', isCompact);
+    stage.classList.toggle('touch-pad', showMobilePad);
+
+    const sideReserveW = isCompact ? 112 : 176;
+    const horizPad = isCompact ? 20 : 28;
+    const vertPad = showMobilePad ? 76 : 24;
+
+    const availBoardW = Math.max(96, w - sideReserveW - horizPad);
+    const availBoardH = Math.max(196, h - vertPad);
+    const aspectRows = getBoardAspectRows(engine.mode);
+
+    const cellSize = Math.max(
+      16,
+      Math.min(
+        46,
+        Math.floor(Math.min(availBoardW / COLS, availBoardH / aspectRows)),
+      ),
+    );
+
+    renderer.resizeBoard(boardCanvas, cellSize, engine.mode === 'boss');
+    renderer.renderPreview(previewCanvas, engine.queue, engine.elapsedMs);
+  };
+
   const updateHud = (snap: HudSnapshot): void => {
-    scoreEl.textContent = snap.score.toLocaleString();
-    chainEl.textContent = String(snap.chain);
-    maxChainEl.textContent = String(snap.maxChain);
-    speedEl.textContent = `LV.${snap.speedLevel}`;
-    clearedEl.textContent = String(snap.totalCleared);
     const diffCfg = DIFFICULTIES[snap.difficulty];
-    diffPillEl.textContent = diffCfg.shortLabel.split(' · ')[0];
+    const charCfg = CHARACTERS[snap.character];
+
+    chainEl.textContent = snap.chain > 0 ? `${snap.chain}连` : `MAX ${snap.maxChain}`;
+    speedEl.textContent = `LV.${snap.speedLevel}`;
+    diffPillEl.textContent = diffCfg.shortLabel;
     diffPillEl.style.borderColor = diffCfg.badgeColor;
 
+    if (snap.mode === 'boss') {
+      stageKeyEl.textContent = `S${snap.bossStage}`;
+      stageValEl.textContent = snap.bossName || '琪露诺';
+    } else {
+      stageKeyEl.textContent = '已消';
+      stageValEl.textContent = `${snap.totalCleared}`;
+    }
+
+    // Spirit Gauge & Spell Card button
+    if (lastEmblemChar !== snap.character) {
+      lastEmblemChar = snap.character;
+      charEmblemEl.innerHTML = getCharacterEmblemSvg(snap.character);
+    }
+    charNameEl.textContent = charCfg.shortName;
+    spiritPctEl.textContent = `${snap.spiritGauge}%`;
+    spiritFillEl.style.width = `${snap.spiritGauge}%`;
+    spellPanelEl.style.setProperty('--spell-accent', charCfg.primaryColor);
+    spellPanelEl.style.setProperty('--spell-glow', charCfg.secondaryColor);
+    spellPanelEl.classList.toggle('ready', snap.spiritReady);
+
+    const canClickSpell =
+      snap.spiritReady &&
+      !snap.paused &&
+      snap.phase !== 'menu' &&
+      snap.phase !== 'gameover';
+    spellBtnEl.disabled = !canClickSpell;
+    spellBtnEl.classList.toggle('ready', canClickSpell);
+    spellTitleEl.textContent = charCfg.spellShort;
+    spellKeyEl.textContent = canClickSpell ? 'Shift/E' : `${snap.spiritGauge}%`;
+    mobileSpellEl.classList.toggle('ready', canClickSpell);
+
+    for (const btn of modeButtons) {
+      btn.classList.toggle('selected', btn.dataset.mode === snap.mode);
+    }
     for (const btn of diffButtons) {
       btn.classList.toggle('selected', btn.dataset.diff === snap.difficulty);
     }
+    for (const btn of charButtons) {
+      btn.classList.toggle('selected', btn.dataset.char === snap.character);
+    }
+
+    startBtnEl.textContent =
+      snap.mode === 'boss' ? '开始异变讨伐' : '开始经典无尽';
 
     menuOverlay.classList.toggle('hidden', snap.phase !== 'menu');
     pauseOverlay.classList.toggle(
@@ -241,8 +360,20 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
       }`;
       goBestEl.textContent = snap.bestScore.toLocaleString();
       goMaxChainEl.textContent = `${snap.maxChain} 连锁`;
-      goClearedEl.textContent = `${snap.totalCleared} / ${snap.allClears}`;
-      goSubtitleEl.textContent = `${diffCfg.name}（${diffCfg.shortLabel}）· 魔法灵力已达上限`;
+      if (snap.mode === 'boss') {
+        goFourthKeyEl.textContent = '讨伐战绩';
+        goFourthValEl.textContent = `S${snap.bossStage} · 击破${snap.bossDefeated}`;
+        goSubtitleEl.textContent = `${charCfg.name} · 异变讨伐（${diffCfg.shortLabel}）`;
+      } else {
+        goFourthKeyEl.textContent = '消除 / 全消';
+        goFourthValEl.textContent = `${snap.totalCleared} / ${snap.allClears}`;
+        goSubtitleEl.textContent = `${charCfg.name} · 经典无尽（${diffCfg.shortLabel}）`;
+      }
+    }
+
+    if (lastRenderedMode !== snap.mode) {
+      lastRenderedMode = snap.mode;
+      updateLayoutSize();
     }
   };
 
@@ -255,36 +386,10 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
   });
 
   // Initial sync with portal HUD
-  ctx.onScoreChange(0, ctx.getBestScore(), '最高 0 连锁');
+  ctx.onScoreChange(0, ctx.getBestScore(), 'Stage 1 · 琪露诺');
   updateHud(engine.getSnapshot());
 
   // ==================== RESPONSIVE SIZING ====================
-
-  const updateLayoutSize = (): void => {
-    if (destroyed) return;
-    const w = ctx.container.clientWidth || 640;
-    const h = ctx.container.clientHeight || 560;
-    const isCompact = w < 540;
-    stage.classList.toggle('compact', isCompact);
-
-    const sideReserveW = isCompact ? 116 : 200;
-    const horizPad = isCompact ? 24 : 32;
-    const vertPad = isCompact ? 76 : 28; // includes frame border + mobile pad if compact
-
-    const availBoardW = Math.max(96, w - sideReserveW - horizPad);
-    const availBoardH = Math.max(196, h - vertPad);
-
-    const cellSize = Math.max(
-      16,
-      Math.min(
-        48,
-        Math.floor(Math.min(availBoardW / COLS, availBoardH / BOARD_ASPECT_ROWS)),
-      ),
-    );
-
-    renderer.resizeBoard(boardCanvas, cellSize);
-    renderer.renderPreview(previewCanvas, engine.queue, engine.elapsedMs);
-  };
 
   let resizeObserver: ResizeObserver | null = null;
   if (typeof ResizeObserver !== 'undefined') {
@@ -299,6 +404,17 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
 
   // ==================== BUTTON & POINTER BINDINGS ====================
 
+  for (const btn of modeButtons) {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.mode as GameMode | undefined;
+      if (mode === 'boss' || mode === 'classic') {
+        audio.unlock();
+        audio.playMove();
+        engine.setMode(mode);
+      }
+    });
+  }
+
   for (const btn of diffButtons) {
     btn.addEventListener('click', () => {
       const id = btn.dataset.diff as DifficultyId | undefined;
@@ -309,6 +425,21 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
       }
     });
   }
+
+  for (const btn of charButtons) {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.char as CharacterId | undefined;
+      if (id && CHARACTERS[id]) {
+        audio.unlock();
+        audio.playRotate();
+        engine.setCharacter(id);
+      }
+    });
+  }
+
+  spellBtnEl.addEventListener('click', () => {
+    engine.castSpellCard();
+  });
 
   stage.querySelector('[data-btn="start"]')?.addEventListener('click', () => {
     engine.startGame();
@@ -332,7 +463,7 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
     ctx.onBackToMenu();
   });
 
-  // On-screen arcade buttons (pointer events for zero-latency mouse & touch)
+  // Compact / touch arcade buttons
   const ctrlButtons = Array.from(
     stage.querySelectorAll<HTMLButtonElement>('[data-action]'),
   );
@@ -366,6 +497,7 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
       else if (action === 'cw') engine.tryRotate(1);
       else if (action === 'ccw') engine.tryRotate(-1);
       else if (action === 'hard') engine.hardDrop();
+      else if (action === 'spell') engine.castSpellCard();
     });
 
     const handleRelease = (e: PointerEvent) => {
@@ -397,7 +529,6 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
 
     const code = e.code;
 
-    // Prevent page scrolling on gameplay keys
     if (
       code === 'ArrowLeft' ||
       code === 'ArrowRight' ||
@@ -421,6 +552,14 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
         const nextIdx = (order.indexOf(engine.difficulty) + 1) % 3;
         engine.setDifficulty(order[nextIdx]);
         audio.playMove();
+      } else if ((code === 'ArrowLeft' || code === 'KeyA') && !e.repeat) {
+        const nextIdx = (CHARACTER_ORDER.indexOf(engine.character) + 2) % 3;
+        engine.setCharacter(CHARACTER_ORDER[nextIdx]);
+        audio.playRotate();
+      } else if ((code === 'ArrowRight' || code === 'KeyD') && !e.repeat) {
+        const nextIdx = (CHARACTER_ORDER.indexOf(engine.character) + 1) % 3;
+        engine.setCharacter(CHARACTER_ORDER[nextIdx]);
+        audio.playRotate();
       }
       return;
     }
@@ -451,6 +590,8 @@ export function mountPuyoGame(ctx: GameMountContext): GameInstance {
       if (!e.repeat) engine.tryRotate(1);
     } else if (code === 'KeyZ' || code === 'KeyQ') {
       if (!e.repeat) engine.tryRotate(-1);
+    } else if (code === 'ShiftLeft' || code === 'ShiftRight' || code === 'KeyE') {
+      if (!e.repeat) engine.castSpellCard();
     }
   };
 
