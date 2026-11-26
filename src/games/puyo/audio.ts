@@ -188,6 +188,213 @@ export class PuyoAudio {
     });
   }
 
+  public playSpellReady(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const freqs = [783.99, 1046.5, 1567.98];
+    freqs.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      const t = now + i * 0.055;
+      osc.frequency.setValueAtTime(f, t);
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.08, t + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.3);
+    });
+  }
+
+  public playReimuSpell(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    // Sacred shrine bell shimmer + purifying sweeping chord
+    const freqs = [587.33, 880, 1174.66, 1479.98, 1760];
+    freqs.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = i % 2 === 0 ? 'triangle' : 'sine';
+      const t = now + i * 0.045;
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 1.03, t + 0.42);
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.11 / (1 + i * 0.16), t + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.48);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.52);
+    });
+  }
+
+  public playMarisaSpell(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    // Master Spark: rapid Hakkero charge whine -> roaring rainbow laser pillar!
+    const charge = ctx.createOscillator();
+    const cGain = ctx.createGain();
+    charge.type = 'sine';
+    charge.frequency.setValueAtTime(320, now);
+    charge.frequency.exponentialRampToValueAtTime(1480, now + 0.16);
+    cGain.gain.setValueAtTime(0.02, now);
+    cGain.gain.linearRampToValueAtTime(0.11, now + 0.14);
+    cGain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    charge.connect(cGain);
+    cGain.connect(ctx.destination);
+    charge.start(now);
+    charge.stop(now + 0.22);
+
+    // Laser beam body chord (detuned sawtooth + triangle bass)
+    const beamStart = now + 0.13;
+    const beamFreqs = [130.81, 261.63, 392.0, 523.25];
+    beamFreqs.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+      osc.type = i < 2 ? 'sawtooth' : 'triangle';
+      osc.frequency.setValueAtTime(f * 1.08, beamStart);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.96, beamStart + 0.48);
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(2600, beamStart);
+      filter.frequency.exponentialRampToValueAtTime(620, beamStart + 0.48);
+      gain.gain.setValueAtTime(0.001, beamStart);
+      gain.gain.linearRampToValueAtTime(i === 0 ? 0.1 : 0.065, beamStart + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, beamStart + 0.52);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(beamStart);
+      osc.stop(beamStart + 0.55);
+    });
+  }
+
+  public playPatchouliSpell(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    // Seven-element arcane transmutation crystalline prism cascade
+    const notes = [440, 554.37, 659.25, 830.61, 987.77, 1108.73, 1318.51];
+    notes.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      const t = now + i * 0.038;
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 1.02, t + 0.34);
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.085, t + 0.014);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.38);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.4);
+    });
+  }
+
+  public playBossHit(heavy = false): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = heavy ? 'triangle' : 'sine';
+    osc.frequency.setValueAtTime(heavy ? 760 : 940, now);
+    osc.frequency.exponentialRampToValueAtTime(heavy ? 240 : 380, now + 0.065);
+    gain.gain.setValueAtTime(heavy ? 0.085 : 0.055, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.072);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.08);
+  }
+
+  public playBossAttack(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    // Crisp Touhou warning pulse
+    [0, 0.09].forEach((offset, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      const t = now + offset;
+      osc.frequency.setValueAtTime(idx === 0 ? 480 : 360, t);
+      osc.frequency.exponentialRampToValueAtTime(idx === 0 ? 340 : 220, t + 0.085);
+      gain.gain.setValueAtTime(0.085, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.095);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.1);
+    });
+  }
+
+  public playOjamaDrop(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(340, now);
+    osc.frequency.exponentialRampToValueAtTime(150, now + 0.11);
+    gain.gain.setValueAtTime(0.08, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.13);
+  }
+
+  public playOjamaShatter(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const freqs = [1180, 1520, 1980];
+    freqs.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      const t = now + i * 0.022;
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.72, t + 0.09);
+      gain.gain.setValueAtTime(0.065, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.11);
+    });
+  }
+
+  public playBossDefeat(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    // Triumphant Touhou Spell Card Bonus fanfare!
+    const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98];
+    notes.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = i < 3 ? 'triangle' : 'sine';
+      const t = now + i * 0.055;
+      osc.frequency.setValueAtTime(f, t);
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.11, t + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.48);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.52);
+    });
+  }
+
   public playAllClear(): void {
     const ctx = this.ensureContext();
     if (!ctx) return;

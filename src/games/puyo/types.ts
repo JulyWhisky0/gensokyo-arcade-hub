@@ -4,62 +4,252 @@ export const HIDDEN_ROWS = 1;
 export const TOTAL_ROWS = VISIBLE_ROWS + HIDDEN_ROWS; // 13 rows total: row 0 hidden buffer, rows 1..12 visible
 export const DEATH_COL = 2;
 export const DEATH_ROW = HIDDEN_ROWS; // Top visible row (row index 1)
+export const BUFFER_PEEK_CELLS = 0.55;
+export const BOSS_BANNER_CELLS = 1.9;
+export const BOSS_PORTRAIT_X = 0.92;
+export const BOSS_PORTRAIT_Y = -(BUFFER_PEEK_CELLS + BOSS_BANNER_CELLS * 0.5);
 
 export type PuyoColor = 0 | 1 | 2 | 3 | 4;
 
+export type GameMode = 'boss' | 'classic';
+
 export type DifficultyId = 'easy' | 'normal' | 'lunatic';
+
+export type CharacterId = 'reimu' | 'marisa' | 'patchouli';
+
+export type BossId = 'cirno' | 'remilia' | 'yukari' | 'suika';
 
 export interface DifficultyConfig {
   id: DifficultyId;
   name: string;
   shortLabel: string;
-  subtitle: string;
   colorCount: 4 | 5;
   baseGravityMs: number;
   minGravityMs: number;
   speedStepEvery: number; // pieces dropped per speed level
   speedDecayFactor: number;
+  bossHpScale: number;
+  bossIntervalScale: number;
   badgeColor: string;
 }
 
 export const DIFFICULTIES: Record<DifficultyId, DifficultyConfig> = {
   easy: {
     id: 'easy',
-    name: '初窥魔法',
-    shortLabel: 'Easy · 4色',
-    subtitle: '4色灵珠 · 舒缓下落 · 适合练习连锁',
+    name: 'Easy',
+    shortLabel: 'Easy',
     colorCount: 4,
     baseGravityMs: 780,
     minGravityMs: 220,
     speedStepEvery: 18,
     speedDecayFactor: 0.91,
+    bossHpScale: 0.85,
+    bossIntervalScale: 1.18,
     badgeColor: '#26b868',
   },
   normal: {
     id: 'normal',
-    name: '幻想异变',
-    shortLabel: 'Normal · 4色加速',
-    subtitle: '4色灵珠 · 节奏加速 · 经典竞技手感',
+    name: 'Normal',
+    shortLabel: 'Normal',
     colorCount: 4,
     baseGravityMs: 580,
     minGravityMs: 115,
     speedStepEvery: 12,
     speedDecayFactor: 0.87,
+    bossHpScale: 1.0,
+    bossIntervalScale: 1.0,
     badgeColor: '#f5b82e',
   },
   lunatic: {
     id: 'lunatic',
-    name: '红雾狂宴',
-    shortLabel: 'Lunatic · 5色',
-    subtitle: '5色灵珠 · 高速魔力 · 帕秋莉秘法参战',
+    name: 'Lunatic',
+    shortLabel: 'Lunatic',
     colorCount: 5,
     baseGravityMs: 470,
     minGravityMs: 85,
     speedStepEvery: 10,
     speedDecayFactor: 0.85,
+    bossHpScale: 1.18,
+    bossIntervalScale: 0.88,
     badgeColor: '#b45ef5',
   },
 };
+
+export interface CharacterConfig {
+  id: CharacterId;
+  name: string;
+  shortName: string;
+  spellName: string;
+  spellShort: string;
+  skillTag: string; // 4-6 chars concise tag
+  primaryColor: string;
+  secondaryColor: string;
+  motif: 'yinyang' | 'star' | 'moon';
+}
+
+export const CHARACTERS: Record<CharacterId, CharacterConfig> = {
+  reimu: {
+    id: 'reimu',
+    name: '博丽灵梦',
+    shortName: '灵梦',
+    spellName: '灵符「梦想封印」',
+    spellShort: '梦想封印',
+    skillTag: '净化顶层两行',
+    primaryColor: '#e83b54',
+    secondaryColor: '#ffd480',
+    motif: 'yinyang',
+  },
+  marisa: {
+    id: 'marisa',
+    name: '雾雨魔理沙',
+    shortName: '魔理沙',
+    spellName: '魔炮「极限火花」',
+    spellShort: '极限火花',
+    skillTag: '中路双列激光',
+    primaryColor: '#f5b82e',
+    secondaryColor: '#fff59d',
+    motif: 'star',
+  },
+  patchouli: {
+    id: 'patchouli',
+    name: '帕秋莉',
+    shortName: '帕秋莉',
+    spellName: '七曜「贤者之石」',
+    spellShort: '贤者之石',
+    skillTag: '稀色转主色',
+    primaryColor: '#a855f7',
+    secondaryColor: '#f0abfc',
+    motif: 'moon',
+  },
+};
+
+export const CHARACTER_ORDER: readonly CharacterId[] = [
+  'reimu',
+  'marisa',
+  'patchouli',
+] as const;
+
+export interface BossTemplate {
+  id: BossId;
+  name: string;
+  title: string;
+  primaryColor: string;
+  secondaryColor: string;
+  hairColor: string;
+  eyeColor: string;
+  ribbonColor: string;
+  baseHp: number;
+  baseIntervalMs: number;
+}
+
+export const BOSS_ROSTER: readonly BossTemplate[] = [
+  {
+    id: 'cirno',
+    name: '琪露诺',
+    title: '湖上冰精',
+    primaryColor: '#29b6f6',
+    secondaryColor: '#c7f4ff',
+    hairColor: '#48b7ff',
+    eyeColor: '#1a6ed8',
+    ribbonColor: '#7be3ff',
+    baseHp: 980,
+    baseIntervalMs: 13800,
+  },
+  {
+    id: 'remilia',
+    name: '蕾米莉亚',
+    title: '红魔大小姐',
+    primaryColor: '#e53950',
+    secondaryColor: '#ffb3c1',
+    hairColor: '#c9b8f2',
+    eyeColor: '#d91e3b',
+    ribbonColor: '#e53950',
+    baseHp: 1450,
+    baseIntervalMs: 12600,
+  },
+  {
+    id: 'yukari',
+    name: '八云紫',
+    title: '境界妖怪',
+    primaryColor: '#a855f7',
+    secondaryColor: '#fde047',
+    hairColor: '#f6d365',
+    eyeColor: '#b57b18',
+    ribbonColor: '#e03e52',
+    baseHp: 1980,
+    baseIntervalMs: 11500,
+  },
+  {
+    id: 'suika',
+    name: '伊吹萃香',
+    title: '萃梦鬼王',
+    primaryColor: '#ff7043',
+    secondaryColor: '#ffe082',
+    hairColor: '#d47a3e',
+    eyeColor: '#c94c24',
+    ribbonColor: '#f5b82e',
+    baseHp: 2560,
+    baseIntervalMs: 10600,
+  },
+] as const;
+
+export interface BossState {
+  stage: number; // 1-based wave
+  template: BossTemplate;
+  hp: number;
+  maxHp: number;
+  displayHp: number;
+  attackTimer: number; // ms remaining until next Ojama attack
+  attackInterval: number; // total ms for this countdown
+  pendingOjama: number; // 0 when idle, 2..5 when armed to drop
+  pendingCols: number[]; // target columns for armed Ojama
+  hitFlash: number; // 0..1 hit wobble / flash
+  attackFlash: number; // 0..1 attack flash
+  defeatTimer: number; // >0 during defeat celebration before next stage
+  enterTimer: number; // >0 during boss slide-in entrance
+}
+
+export interface DanmakuOrb {
+  startX: number;
+  startY: number;
+  ctrlX: number;
+  ctrlY: number;
+  targetX: number;
+  targetY: number;
+  progress: number;
+  duration: number;
+  color: string;
+  coreColor: string;
+  radius: number;
+  damage: number;
+  trail: Array<{ x: number; y: number }>;
+}
+
+export interface ActiveSpellVfx {
+  character: CharacterId;
+  timer: number;
+  duration: number;
+  impactMs: number;
+  impactApplied: boolean;
+  targetRows?: number[];
+  targetCols?: number[];
+  transformedCells?: Array<{
+    col: number;
+    row: number;
+    fromColor: PuyoColor;
+    toColor: PuyoColor;
+  }>;
+  fromColor?: PuyoColor;
+  toColor?: PuyoColor;
+}
+
+export interface BossBonusBanner {
+  bossName: string;
+  stage: number;
+  bonus: number;
+  timer: number;
+  duration: number;
+}
 
 export interface PuyoTheme {
   id: PuyoColor;
@@ -141,6 +331,7 @@ export interface SpellCardBanner {
   chain: number;
   title: string;
   caster: string;
+  tag?: string; // Optional override for right-hand kicker (e.g. SPELL CARD)
   primaryColor: string;
   secondaryColor: string;
   motif: PuyoTheme['motif'];
@@ -214,6 +405,7 @@ export function getSpellCardForChain(chain: number): SpellCardSpec | null {
 
 export interface GridCell {
   color: PuyoColor;
+  isOjama?: boolean;
   squish: number; // 0..1.4 remaining damped-spring wobble energy
   squishPhase: number;
   squishFreq: number; // spring angular speed for varied organic feel
@@ -259,6 +451,7 @@ export interface ActivePair {
 export interface FallingPuyo {
   col: number;
   color: PuyoColor;
+  isOjama?: boolean;
   startRow: number;
   targetRow: number;
   y: number;
@@ -269,6 +462,7 @@ export interface ClearingCell {
   col: number;
   row: number;
   color: PuyoColor;
+  isOjama?: boolean;
 }
 
 export interface Particle {
@@ -311,10 +505,14 @@ export type GamePhase =
   | 'falling'
   | 'dropping'
   | 'clearing'
+  | 'spell'
   | 'gameover';
 
 export interface HudSnapshot {
   phase: GamePhase;
+  mode: GameMode;
+  character: CharacterId;
+  difficulty: DifficultyId;
   score: number;
   bestScore: number;
   chain: number;
@@ -322,7 +520,11 @@ export interface HudSnapshot {
   speedLevel: number;
   totalCleared: number;
   allClears: number;
-  difficulty: DifficultyId;
+  spiritGauge: number; // 0..100
+  spiritReady: boolean;
+  bossStage: number;
+  bossDefeated: number;
+  bossName: string;
   paused: boolean;
   isNewBest: boolean;
 }
