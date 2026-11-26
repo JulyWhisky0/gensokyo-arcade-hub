@@ -1,0 +1,17 @@
+{
+  "name": "gensokyo-arcade-hub",
+  "private": true,
+  "version": "1.0.0",
+  "description": "博丽神社游艺厅 · 东方同人小游戏合集 (Touhou Project Mini-Games Hub)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "vite": "^6.2.2"
+  }
+}
