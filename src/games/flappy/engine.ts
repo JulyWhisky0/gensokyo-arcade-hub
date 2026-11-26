@@ -13,6 +13,8 @@ import {
   getMedalForScore,
   getSkyPhaseForScore,
   type CharacterId,
+  type DanmakuColor,
+  type DanmakuOrb,
   type Particle,
   type ParticleKind,
   type PipeObstacle,
@@ -21,6 +23,12 @@ import {
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
+}
+
+function getHitboxRadius(character: CharacterId): number {
+  return character === 'reimu'
+    ? PHYSICS.HITBOX_RADIUS * PHYSICS.REIMU_HITBOX_SCALE
+    : PHYSICS.HITBOX_RADIUS;
 }
 
 function circleIntersectsRect(
@@ -75,7 +83,12 @@ class FlappyEngine implements GameInstance {
 
   // HUD & Overlay Elements
   private scoreLiveEl: HTMLDivElement;
-  private phasePillEl: HTMLDivElement;
+  private hudBarEl: HTMLDivElement;
+  private skillPillEl: HTMLButtonElement;
+  private skillFillEl: HTMLDivElement;
+  private skillLabelEl: HTMLSpanElement;
+  private skillStateEl: HTMLSpanElement;
+  private grazeBadgeEl: HTMLDivElement;
   private readyOverlayEl: HTMLDivElement;
   private pauseOverlayEl: HTMLDivElement;
   private gameOverOverlayEl: HTMLDivElement;
@@ -100,7 +113,11 @@ class FlappyEngine implements GameInstance {
   private hitstopTimer = 0;
   private gameOverGuardTimer = 0;
   private scorePopTimer = 0;
+  private grazePopTimer = 0;
+  private skillNudgeTimer = 0;
   private trailTimer = 0;
+  private afterimageTimer = 0;
+  private freezeFrostTimer = 0;
   private nextEntityId = 1;
   private pipesSpawned = 0;
   private lastGapY: number = PHYSICS.PLAYER_START_Y;
@@ -142,16 +159,55 @@ class FlappyEngine implements GameInstance {
     this.canvasCtx = c2d;
     this.stageEl.appendChild(this.canvas);
 
-    // Live Top HUD
+    // Slim Live Top HUD: Score + Spirit Gauge/Skill Pill + Live Graze Badge
     const hudEl = document.createElement('div');
     hudEl.className = 'flappy-hud';
     this.scoreLiveEl = document.createElement('div');
     this.scoreLiveEl.className = 'flappy-score-live';
     this.scoreLiveEl.textContent = '0';
-    this.phasePillEl = document.createElement('div');
-    this.phasePillEl.className = 'flappy-phase-pill';
-    this.phasePillEl.textContent = '射命丸文 · 黎明竹林';
-    hudEl.append(this.scoreLiveEl, this.phasePillEl);
+
+    this.hudBarEl = document.createElement('div');
+    this.hudBarEl.className = 'flappy-hud-bar hidden';
+
+    this.skillPillEl = document.createElement('button');
+    this.skillPillEl.type = 'button';
+    this.skillPillEl.className = 'flappy-skill-pill';
+    this.skillPillEl.setAttribute('aria-label', '释放自机符卡');
+
+    this.skillFillEl = document.createElement('div');
+    this.skillFillEl.className = 'flappy-skill-fill';
+
+    this.skillLabelEl = document.createElement('span');
+    this.skillLabelEl.className = 'flappy-skill-label';
+
+    this.skillStateEl = document.createElement('span');
+    this.skillStateEl.className = 'flappy-skill-state';
+
+    this.skillPillEl.append(this.skillFillEl, this.skillLabelEl, this.skillStateEl);
+
+    const onSkillPointerDown = (ev: PointerEvent) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      if (this.state.phase === 'playing') {
+        this.tryActivateSkill();
+      }
+    };
+    const onSkillClick = (ev: Event) => {
+      ev.stopPropagation();
+    };
+    this.skillPillEl.addEventListener('pointerdown', onSkillPointerDown);
+    this.skillPillEl.addEventListener('click', onSkillClick);
+    this.cleanupListeners.push(
+      () => this.skillPillEl.removeEventListener('pointerdown', onSkillPointerDown),
+      () => this.skillPillEl.removeEventListener('click', onSkillClick),
+    );
+
+    this.grazeBadgeEl = document.createElement('div');
+    this.grazeBadgeEl.className = 'flappy-graze-badge hidden';
+    this.grazeBadgeEl.textContent = '⚡ GRAZE 0';
+
+    this.hudBarEl.append(this.skillPillEl, this.grazeBadgeEl);
+    hudEl.append(this.scoreLiveEl, this.hudBarEl);
     this.stageEl.appendChild(hudEl);
 
     // Ready Overlay (character selection + tap/space prompt)
@@ -180,6 +236,8 @@ class FlappyEngine implements GameInstance {
 
     this.resizeCanvas();
     this.bindEvents();
+    this.updateSkillHud();
+    this.updateGrazeHud();
     this.syncOverlays();
     this.notifyHostScore();
 
@@ -212,14 +270,18 @@ class FlappyEngine implements GameInstance {
         flapGlow: 0,
         scarfWave: 0,
         orbAngle: 0,
-        radius: PHYSICS.HITBOX_RADIUS,
+        radius: getHitboxRadius(character),
         dizzyTime: 0,
         blinkTimer: 2.8,
         blinkDuration: 0,
         determinedTimer: 0,
+        grazeFlash: 0,
+        invincibleTimer: 0,
       },
       pipes: [],
       stars: [],
+      danmaku: [],
+      afterimages: [],
       particles: particlePool,
       particleCount: 0,
       floatingTexts: [],
@@ -227,6 +289,13 @@ class FlappyEngine implements GameInstance {
       bestScore,
       pipesCleared: 0,
       starsCollected: 0,
+      grazeCount: 0,
+      spiritGauge: 0,
+      ayaDashTimer: 0,
+      cirnoFreezeTimer: 0,
+      reimuBarrierTimer: 0,
+      reimuBarrierX: PHYSICS.PLAYER_X,
+      reimuBarrierY: PHYSICS.PLAYER_START_Y,
       skyProgress: 0,
       scrollDistance: 0,
       prevScrollDistance: 0,
@@ -238,6 +307,9 @@ class FlappyEngine implements GameInstance {
       shakeIntensity: 0,
       phaseBannerText: '',
       phaseBannerTimer: 0,
+      spellBannerText: '',
+      spellBannerTimer: 0,
+      spellBannerColor: '#facc15',
     };
   }
 
@@ -247,18 +319,14 @@ class FlappyEngine implements GameInstance {
 
     const header = document.createElement('div');
     header.className = 'flappy-ready-header';
-    header.innerHTML = `
-      <div class="flappy-ready-kicker">GENSOKYO FLAPPY AYA</div>
-      <div class="flappy-ready-title">竹林疾飞 · 准备振翼</div>
-      <div class="flappy-ready-sub">穿越竹林与博丽鸟居，收集 P 点与信仰星 (+2)</div>
-    `;
+    header.innerHTML = `<div class="flappy-ready-title">竹林疾飞</div>`;
 
     const footer = document.createElement('div');
     footer.className = 'flappy-ready-footer';
 
     const hint = document.createElement('div');
     hint.className = 'flappy-tap-hint';
-    hint.textContent = '✦ 点击屏幕 或 按 Space / ↑ / W 起飞 ✦';
+    hint.textContent = '✦ 点击 / Space 起飞 ✦';
 
     const selector = document.createElement('div');
     selector.className = 'flappy-char-selector';
@@ -475,11 +543,22 @@ class FlappyEngine implements GameInstance {
     // Instant zero-latency response on mouse, touch, and pen via pointerdown
     const onPointerDown = (ev: PointerEvent) => {
       if (this.destroyed) return;
+      if (ev.button === 2) {
+        if (this.state.phase === 'playing') {
+          ev.preventDefault();
+          this.tryActivateSkill();
+        }
+        return;
+      }
       if (ev.button !== 0 && ev.pointerType === 'mouse') return;
       if (this.state.phase === 'ready' || this.state.phase === 'playing') {
         ev.preventDefault();
         this.requestFlap();
       }
+    };
+
+    const onContextMenu = (ev: MouseEvent) => {
+      ev.preventDefault();
     };
 
     const onKeyDown = (ev: KeyboardEvent) => {
@@ -497,6 +576,16 @@ class FlappyEngine implements GameInstance {
           ev.preventDefault();
           if (!ev.repeat) {
             this.requestFlap();
+          }
+        }
+        return;
+      }
+
+      if (ev.code === 'ShiftLeft' || ev.code === 'ShiftRight' || ev.code === 'KeyE') {
+        if (this.state.phase === 'playing') {
+          ev.preventDefault();
+          if (!ev.repeat) {
+            this.tryActivateSkill();
           }
         }
         return;
@@ -524,6 +613,7 @@ class FlappyEngine implements GameInstance {
     const onWindowResize = () => this.resizeCanvas();
 
     this.stageEl.addEventListener('pointerdown', onPointerDown, { passive: false });
+    this.stageEl.addEventListener('contextmenu', onContextMenu);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', onWindowResize);
 
@@ -534,6 +624,7 @@ class FlappyEngine implements GameInstance {
 
     this.cleanupListeners.push(
       () => this.stageEl.removeEventListener('pointerdown', onPointerDown),
+      () => this.stageEl.removeEventListener('contextmenu', onContextMenu),
       () => window.removeEventListener('keydown', onKeyDown),
       () => window.removeEventListener('resize', onWindowResize),
     );
@@ -567,6 +658,7 @@ class FlappyEngine implements GameInstance {
   private selectCharacter(id: CharacterId): void {
     if (this.state.character === id) return;
     this.state.character = id;
+    this.state.player.radius = getHitboxRadius(id);
     this.audio.playSelect();
 
     for (const [cid, btn] of this.charButtons.entries()) {
@@ -581,7 +673,7 @@ class FlappyEngine implements GameInstance {
     p.scaleVelY = -1.5;
     p.flapGlow = 0.85;
     this.spawnFlapBurst(p.x, p.y, id, 9, true);
-    this.updatePhasePill();
+    this.updateSkillHud();
     this.notifyHostScore();
   }
 
@@ -599,9 +691,16 @@ class FlappyEngine implements GameInstance {
       this.lastGapY = PHYSICS.PLAYER_START_Y;
       this.spawnInitialPipes();
       this.syncOverlays();
+      this.updateSkillHud();
+      this.updateGrazeHud();
     }
 
     if (this.state.phase !== 'playing') return;
+    // Ignore vertical flaps during Aya's locked horizontal wind dash
+    if (this.state.ayaDashTimer > 0) {
+      this.flapBufferTimer = 0;
+      return;
+    }
 
     this.flapBufferTimer = 0;
     this.flapCooldownTimer = PHYSICS.FLAP_COOLDOWN;
@@ -654,6 +753,8 @@ class FlappyEngine implements GameInstance {
   private spawnInitialPipes(): void {
     this.state.pipes = [];
     this.state.stars = [];
+    this.state.danmaku = [];
+    this.state.afterimages = [];
     // Comfortable scenic sightline before first obstacle glides into view
     const firstX = STAGE_WIDTH + 68;
     this.spawnPipeAt(firstX, null);
@@ -662,7 +763,7 @@ class FlappyEngine implements GameInstance {
   }
 
   private spawnPipeAt(x: number, prevPipe: PipeObstacle | null): void {
-    const { gapHeight } = this.getDifficultyParams(this.state.score);
+    const { gapHeight, speed } = this.getDifficultyParams(this.state.score);
     const minY = Math.max(PHYSICS.MIN_GAP_Y, gapHeight * 0.5 + 36);
     const maxY = Math.min(PHYSICS.MAX_GAP_Y, PLAYABLE_HEIGHT - gapHeight * 0.5 - 36);
 
@@ -692,6 +793,10 @@ class FlappyEngine implements GameInstance {
       passed: false,
       style,
       lanternPhase: Math.random() * Math.PI * 2,
+      grazedTop: false,
+      grazedBottom: false,
+      topShattered: false,
+      bottomShattered: false,
     };
     this.state.pipes.push(pipe);
     this.pipesSpawned++;
@@ -736,6 +841,86 @@ class FlappyEngine implements GameInstance {
         });
       }
     }
+
+    // Incident Danmaku Waves (异变弹幕): start at score >= 10, ramping through Twilight & Scarlet Mist
+    if (this.state.score >= 10) {
+      this.maybeSpawnIncidentDanmaku(pipe, prevPipe, speed);
+    }
+  }
+
+  private maybeSpawnIncidentDanmaku(
+    pipe: PipeObstacle,
+    prevPipe: PipeObstacle | null,
+    scrollSpeed: number,
+  ): void {
+    const score = this.state.score;
+    const spawnChance = score >= 30 ? 0.82 : score >= 15 ? 0.66 : 0.48;
+    if (Math.random() > spawnChance) return;
+
+    const doubleChance = score >= 30 ? 0.48 : score >= 15 ? 0.25 : 0;
+    const count = Math.random() < doubleChance ? 2 : 1;
+
+    const pickColor = (): DanmakuColor => {
+      if (score >= 30) return Math.random() < 0.72 ? 'scarlet' : 'gold';
+      if (score >= 15) return Math.random() < 0.48 ? 'scarlet' : 'gold';
+      return 'gold';
+    };
+
+    const firstSign = Math.random() < 0.5 ? -1 : 1;
+
+    // Orb 1: aims to cross the open corridor between prevPipe and pipe (or just ahead of pipe)
+    const targetX1 = prevPipe
+      ? (prevPipe.x + prevPipe.width + pipe.x) * 0.5
+      : pipe.x + pipe.width * 0.5;
+    const avgY = prevPipe ? (prevPipe.gapY + pipe.gapY) * 0.5 : pipe.gapY;
+    const vx1 = 24 + Math.random() * 18;
+    const travelTime1 = Math.max(0.4, (targetX1 - PHYSICS.PLAYER_X) / Math.max(120, scrollSpeed));
+    const spawnX1 = targetX1 + vx1 * travelTime1;
+    const baseY1 = clamp(avgY + firstSign * (28 + Math.random() * 16), 74, PLAYABLE_HEIGHT - 74);
+
+    this.state.danmaku.push({
+      id: this.nextEntityId++,
+      x: spawnX1,
+      prevX: spawnX1,
+      y: baseY1,
+      prevY: baseY1,
+      baseY: baseY1,
+      vx: vx1,
+      ampY: 10 + Math.random() * 8,
+      freqY: 1.7 + Math.random() * 0.6,
+      phase: Math.random() * Math.PI * 2,
+      radius: 13.5,
+      color: pickColor(),
+      grazed: false,
+      shattered: false,
+    });
+
+    // Orb 2 (Twilight / Scarlet Mist): staggered in pipe gap on the opposite vertical lane for clean S-weave & double graze
+    if (count === 2) {
+      const targetX2 = pipe.x + pipe.width * 0.5;
+      const vx2 = 28 + Math.random() * 18;
+      const travelTime2 = Math.max(0.4, (targetX2 - PHYSICS.PLAYER_X) / Math.max(120, scrollSpeed));
+      const spawnX2 = Math.max(spawnX1 + 78, targetX2 + vx2 * travelTime2);
+      const laneOffset = Math.min(34, pipe.gapHeight * 0.24);
+      const baseY2 = clamp(pipe.gapY - firstSign * laneOffset, 76, PLAYABLE_HEIGHT - 76);
+
+      this.state.danmaku.push({
+        id: this.nextEntityId++,
+        x: spawnX2,
+        prevX: spawnX2,
+        y: baseY2,
+        prevY: baseY2,
+        baseY: baseY2,
+        vx: vx2,
+        ampY: 8 + Math.random() * 6,
+        freqY: 1.9 + Math.random() * 0.5,
+        phase: Math.random() * Math.PI * 2,
+        radius: 13,
+        color: pickColor(),
+        grazed: false,
+        shattered: false,
+      });
+    }
   }
 
   private addScore(points: number, popupX: number, popupY: number, label: string, color: string): void {
@@ -769,8 +954,265 @@ class FlappyEngine implements GameInstance {
       this.audio.playPhaseShift();
     }
 
-    this.updatePhasePill();
     this.notifyHostScore();
+  }
+
+  private addSpirit(amount: number): void {
+    if (this.state.phase !== 'playing') return;
+    // Don't double-charge while Aya is actively dashing
+    if (this.state.ayaDashTimer > 0) return;
+
+    const prev = this.state.spiritGauge;
+    this.state.spiritGauge = clamp(prev + amount, 0, 100);
+    if (prev < 100 && this.state.spiritGauge >= 100) {
+      this.audio.playSpellReady();
+      const p = this.state.player;
+      const cfg = CHARACTER_MAP[this.state.character];
+      this.emitParticle(p.x, p.y, 0, 0, 18, 0, 0, 0.42, cfg.accentColor, '#ffffff', 'ring', 0, 1);
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        this.emitParticle(
+          p.x,
+          p.y,
+          Math.cos(a) * 95,
+          Math.sin(a) * 95,
+          4.2,
+          a,
+          4,
+          0.38,
+          '#fef08a',
+          '#ffffff',
+          'sparkle',
+          0,
+          0.92,
+        );
+      }
+    }
+    this.updateSkillHud();
+  }
+
+  private isSkillActive(): boolean {
+    return (
+      this.state.ayaDashTimer > 0 ||
+      this.state.cirnoFreezeTimer > 0 ||
+      this.state.reimuBarrierTimer > 0
+    );
+  }
+
+  private triggerSpellBanner(text: string, color: string): void {
+    this.state.spellBannerText = text;
+    this.state.spellBannerTimer = 1.55;
+    this.state.spellBannerColor = color;
+  }
+
+  private tryActivateSkill(): void {
+    if (this.state.phase !== 'playing') return;
+    if (this.state.spiritGauge < 100 || this.isSkillActive()) {
+      this.skillPillEl.classList.remove('not-ready');
+      void this.skillPillEl.offsetWidth;
+      this.skillPillEl.classList.add('not-ready');
+      this.skillNudgeTimer = 0.25;
+      return;
+    }
+
+    const p = this.state.player;
+    const char = this.state.character;
+
+    if (char === 'aya') {
+      // 射命丸文 — 疾风「幻想风靡」: 0.45s high-speed invincible dash shattering pipes & danmaku
+      this.state.spiritGauge = 0;
+      this.state.ayaDashTimer = PHYSICS.AYA_DASH_DURATION;
+      p.invincibleTimer = Math.max(
+        p.invincibleTimer,
+        PHYSICS.AYA_DASH_DURATION + PHYSICS.AYA_DASH_GRACE_INVINCIBLE,
+      );
+      p.vy = 0;
+      p.rotation = -0.06;
+      p.rotVelocity = 0;
+      p.scaleX = 1.26;
+      p.scaleY = 0.78;
+      p.scaleVelX = -1.5;
+      p.scaleVelY = 1.5;
+      p.determinedTimer = 0.7;
+      this.afterimageTimer = 0;
+      this.state.flashAlpha = 0.34;
+      this.state.shakeTime = 0.2;
+      this.state.shakeIntensity = 5.2;
+      this.triggerSpellBanner('疾风「幻想风靡」', '#f59e0b');
+      this.audio.playAyaDash();
+      this.spawnAyaDashBurst(p.x, p.y);
+    } else if (char === 'reimu') {
+      // 博丽灵梦 — Manual 结界「阴阳玉」 clear pulse
+      this.activateReimuBarrier(false);
+    } else {
+      // 琪露诺 — 冰符「完美冻结」: 2.5s 45% Bullet-Time Slow-Mo
+      this.state.spiritGauge = 0;
+      this.state.cirnoFreezeTimer = PHYSICS.CIRNO_FREEZE_DURATION;
+      this.freezeFrostTimer = 0;
+      p.flapGlow = 1;
+      p.determinedTimer = 0.9;
+      this.state.flashAlpha = 0.36;
+      this.state.shakeTime = 0.16;
+      this.state.shakeIntensity = 3.5;
+      this.triggerSpellBanner('冰符「完美冻结」', '#38bdf8');
+      this.audio.playCirnoFreeze();
+      this.spawnFreezeBurst(p.x, p.y);
+    }
+
+    this.updateSkillHud();
+  }
+
+  private activateReimuBarrier(
+    isDeathbomb: boolean,
+    hitPipe?: PipeObstacle,
+    hitTop = false,
+    hitBottom = false,
+    hitOrb?: DanmakuOrb,
+  ): void {
+    const p = this.state.player;
+    this.state.spiritGauge = 0;
+    p.invincibleTimer = PHYSICS.REIMU_INVINCIBLE_DURATION;
+    this.state.reimuBarrierTimer = PHYSICS.REIMU_BARRIER_VISUAL_DURATION;
+    this.state.reimuBarrierX = p.x;
+    this.state.reimuBarrierY = p.y;
+    p.flapGlow = 1;
+    p.determinedTimer = 0.9;
+    this.state.flashAlpha = isDeathbomb ? 0.58 : 0.36;
+    this.state.shakeTime = 0.26;
+    this.state.shakeIntensity = isDeathbomb ? 6.8 : 4.6;
+
+    if (isDeathbomb) {
+      this.hitstopTimer = 0.055;
+      if (p.vy > 100) {
+        p.vy = -210;
+      }
+      this.triggerSpellBanner('决死结界「阴阳玉」', '#fb7185');
+      this.state.floatingTexts.push({
+        x: p.x + 12,
+        y: p.y - 34,
+        vy: -54,
+        text: '决死结界!',
+        color: '#ffe4e6',
+        strokeColor: '#881337',
+        scale: 1.18,
+        life: 1.0,
+        maxLife: 1.0,
+      });
+    } else {
+      this.triggerSpellBanner('结界「阴阳玉」', '#fb7185');
+    }
+
+    this.audio.playReimuBarrier(isDeathbomb);
+    this.spawnReimuBarrierBurst(p.x, p.y);
+
+    // Explicitly shatter colliding obstacle(s)
+    if (hitPipe) {
+      if (hitTop && !hitPipe.topShattered) {
+        this.shatterPipePillar(hitPipe, true, 'reimu');
+      }
+      if (hitBottom && !hitPipe.bottomShattered) {
+        this.shatterPipePillar(hitPipe, false, 'reimu');
+      }
+    }
+    if (hitOrb && !hitOrb.shattered) {
+      this.shatterDanmakuOrb(hitOrb, 'reimu');
+    }
+
+    // Clear nearby pillars within Yin-Yang shockwave radius & nearby danmaku orbs
+    const pillarBlastR = 148;
+    const capOver = PHYSICS.PIPE_CAP_OVERHANG;
+    for (let i = 0; i < this.state.pipes.length; i++) {
+      const pipe = this.state.pipes[i];
+      const topH = Math.max(0, pipe.gapY - pipe.gapHeight * 0.5);
+      const bottomY = pipe.gapY + pipe.gapHeight * 0.5;
+      const bottomH = Math.max(0, PLAYABLE_HEIGHT - bottomY);
+
+      if (
+        !pipe.topShattered &&
+        topH > 0 &&
+        circleIntersectsRect(p.x, p.y, pillarBlastR, pipe.x - capOver, 0, pipe.width + capOver * 2, topH)
+      ) {
+        this.shatterPipePillar(pipe, true, 'reimu');
+      }
+      if (
+        !pipe.bottomShattered &&
+        bottomH > 0 &&
+        circleIntersectsRect(
+          p.x,
+          p.y,
+          pillarBlastR,
+          pipe.x - capOver,
+          bottomY,
+          pipe.width + capOver * 2,
+          bottomH,
+        )
+      ) {
+        this.shatterPipePillar(pipe, false, 'reimu');
+      }
+    }
+
+    const orbBlastR = 235;
+    for (let i = 0; i < this.state.danmaku.length; i++) {
+      const orb = this.state.danmaku[i];
+      if (orb.shattered) continue;
+      const dx = orb.x - p.x;
+      const dy = orb.y - p.y;
+      if (dx * dx + dy * dy <= orbBlastR * orbBlastR) {
+        this.shatterDanmakuOrb(orb, 'reimu');
+      }
+    }
+
+    this.updateSkillHud();
+  }
+
+  private shatterPipePillar(pipe: PipeObstacle, isTop: boolean, source: 'aya' | 'reimu'): void {
+    if (isTop) {
+      if (pipe.topShattered) return;
+      pipe.topShattered = true;
+      pipe.grazedTop = true;
+    } else {
+      if (pipe.bottomShattered) return;
+      pipe.bottomShattered = true;
+      pipe.grazedBottom = true;
+    }
+
+    const topH = Math.max(0, pipe.gapY - pipe.gapHeight * 0.5);
+    const bottomY = pipe.gapY + pipe.gapHeight * 0.5;
+    const cx = pipe.x + pipe.width * 0.5;
+    const cy = isTop
+      ? Math.max(36, topH - 42)
+      : Math.min(PLAYABLE_HEIGHT - 36, bottomY + 42);
+
+    this.audio.playShatter();
+    this.spawnPipeShatterBurst(cx, cy, pipe.style, source);
+    this.state.shakeTime = Math.max(this.state.shakeTime, 0.14);
+    this.state.shakeIntensity = Math.max(this.state.shakeIntensity, 4.2);
+
+    const color = source === 'aya' ? '#fde047' : '#fda4af';
+    this.addScore(2, cx, cy - 10, '破柱 +2!', color);
+  }
+
+  private shatterDanmakuOrb(orb: DanmakuOrb, source: 'aya' | 'reimu'): void {
+    if (orb.shattered) return;
+    orb.shattered = true;
+    orb.grazed = true;
+
+    this.audio.playShatter();
+    this.spawnDanmakuShatterBurst(orb.x, orb.y, orb.color, source);
+    const color = source === 'aya' ? '#fde047' : '#fbcfe8';
+    this.addScore(2, orb.x, orb.y - 12, '弹消 +2!', color);
+  }
+
+  private triggerGraze(sparkX: number, sparkY: number): void {
+    this.state.grazeCount++;
+    this.state.player.grazeFlash = 1;
+    this.audio.playGraze();
+    this.spawnGrazeBurst(sparkX, sparkY);
+    this.addSpirit(PHYSICS.GRAZE_SPIRIT);
+
+    const p = this.state.player;
+    this.addScore(1, p.x + 22, p.y - 26, 'GRAZE! +1', '#fff59d');
+    this.updateGrazeHud(true);
   }
 
   private triggerCrash(): void {
@@ -808,7 +1250,9 @@ class FlappyEngine implements GameInstance {
     const medal = getMedalForScore(this.state.score);
     const charName = CHARACTER_MAP[this.state.character].name;
     const extra =
-      medal.tier !== 'none' ? `${charName} · ${medal.label}` : `${charName} · ${this.state.pipesCleared}根柱`;
+      medal.tier !== 'none'
+        ? `${charName} · ${medal.label}${this.state.grazeCount > 0 ? ` · 擦弹${this.state.grazeCount}` : ''}`
+        : `${charName} · ${this.state.pipesCleared}柱${this.state.grazeCount > 0 ? ` · 擦弹${this.state.grazeCount}` : ''}`;
     this.ctx.saveScore(this.state.score, extra);
     this.state.bestScore = Math.max(this.state.bestScore, this.ctx.getBestScore());
     this.ctx.onGameOver(this.state.score, extra);
@@ -848,28 +1292,78 @@ class FlappyEngine implements GameInstance {
     this.goBestEl.textContent = String(this.state.bestScore);
     this.goNewBadgeEl.style.display = this.isNewBest && this.state.score > 0 ? 'inline-block' : 'none';
 
-    this.goCharEl.textContent = `飞行角色：${charCfg.name}`;
-    this.goStatsEl.textContent = `柱子 ${this.state.pipesCleared} · 星点 ${this.state.starsCollected}`;
+    this.goCharEl.textContent = charCfg.name;
+    this.goStatsEl.textContent = `柱 ${this.state.pipesCleared} · 星 ${this.state.starsCollected} · 擦弹 ${this.state.grazeCount}`;
     this.goNoteEl.textContent = medal.subtitle;
   }
 
-  private updatePhasePill(): void {
-    const charName = CHARACTER_MAP[this.state.character].name;
-    const sky = getSkyPhaseForScore(this.state.score);
-    this.phasePillEl.textContent = `${charName} · ${sky.name}`;
+  private updateSkillHud(): void {
+    const cfg = CHARACTER_MAP[this.state.character];
+    const glow =
+      this.state.character === 'cirno'
+        ? 'rgba(56, 189, 248, 0.72)'
+        : this.state.character === 'reimu'
+          ? 'rgba(251, 113, 133, 0.72)'
+          : 'rgba(245, 158, 11, 0.72)';
+    this.skillPillEl.style.setProperty('--skill-color', cfg.primaryColor);
+    this.skillPillEl.style.setProperty('--skill-accent', cfg.accentColor);
+    this.skillPillEl.style.setProperty('--skill-glow', glow);
+    this.skillLabelEl.textContent = `${cfg.skillIcon} ${cfg.skillName}`;
+
+    const active = this.isSkillActive();
+    let pct = this.state.spiritGauge;
+    let stateText = `${Math.floor(pct)}%`;
+
+    if (this.state.ayaDashTimer > 0) {
+      pct = (this.state.ayaDashTimer / PHYSICS.AYA_DASH_DURATION) * 100;
+      stateText = '冲刺!';
+    } else if (this.state.cirnoFreezeTimer > 0) {
+      pct = (this.state.cirnoFreezeTimer / PHYSICS.CIRNO_FREEZE_DURATION) * 100;
+      stateText = `${this.state.cirnoFreezeTimer.toFixed(1)}s`;
+    } else if (this.state.reimuBarrierTimer > 0) {
+      pct = (this.state.reimuBarrierTimer / PHYSICS.REIMU_BARRIER_VISUAL_DURATION) * 100;
+      stateText = '结界!';
+    } else if (this.state.spiritGauge >= 100) {
+      pct = 100;
+      stateText = this.state.character === 'reimu' ? '就绪·自动' : 'Shift/右键';
+    }
+
+    this.skillFillEl.style.width = `${clamp(pct, 0, 100).toFixed(1)}%`;
+    this.skillStateEl.textContent = stateText;
+    this.skillPillEl.classList.toggle('ready', !active && this.state.spiritGauge >= 100);
+    this.skillPillEl.classList.toggle('active', active);
+  }
+
+  private updateGrazeHud(pop = false): void {
+    const count = this.state.grazeCount;
+    this.grazeBadgeEl.classList.toggle('hidden', count <= 0);
+    if (count > 0) {
+      this.grazeBadgeEl.textContent = `⚡ GRAZE ${count}`;
+      if (pop) {
+        this.grazeBadgeEl.classList.add('pop');
+        this.grazePopTimer = 0.14;
+      }
+    }
   }
 
   private notifyHostScore(): void {
     const charName = CHARACTER_MAP[this.state.character].name;
     const sky = getSkyPhaseForScore(this.state.score);
-    this.ctx.onScoreChange(this.state.score, this.state.bestScore, `${charName} · ${sky.name}`);
+    const grazePart = this.state.grazeCount > 0 ? ` · 擦弹 ${this.state.grazeCount}` : '';
+    this.ctx.onScoreChange(
+      this.state.score,
+      this.state.bestScore,
+      `${charName} · ${sky.name}${grazePart}`,
+    );
   }
 
   private syncOverlays(): void {
-    this.readyOverlayEl.classList.toggle('hidden', this.state.phase !== 'ready');
+    const isReady = this.state.phase === 'ready';
+    this.readyOverlayEl.classList.toggle('hidden', !isReady);
     this.pauseOverlayEl.classList.toggle('hidden', this.state.phase !== 'paused');
     this.gameOverOverlayEl.classList.toggle('hidden', this.state.phase !== 'gameover');
-    this.scoreLiveEl.style.opacity = this.state.phase === 'ready' ? '0' : '1';
+    this.scoreLiveEl.style.opacity = isReady ? '0' : '1';
+    this.hudBarEl.classList.toggle('hidden', isReady);
   }
 
   // Zero-GC pooled particle emitter
@@ -1077,6 +1571,186 @@ class FlappyEngine implements GameInstance {
     }
   }
 
+  private spawnGrazeBurst(x: number, y: number): void {
+    // Crisp electric gold-white graze ring
+    this.emitParticle(x, y, 0, 0, 10, 0, 0, 0.22, '#fff9c4', '#fde047', 'ring', 0, 1);
+    const colors = ['#ffffff', '#fef08a', '#facc15', '#fffbeb'];
+    for (let i = 0; i < 9; i++) {
+      const a = (i / 9) * Math.PI * 2 + (Math.random() - 0.5) * 0.45;
+      const spd = 125 + Math.random() * 165;
+      this.emitParticle(
+        x,
+        y,
+        Math.cos(a) * spd,
+        Math.sin(a) * spd,
+        7.5 + Math.random() * 5.5,
+        a,
+        0,
+        0.22 + Math.random() * 0.14,
+        colors[i % colors.length],
+        '#fde047',
+        'grazeSpark',
+        0,
+        0.88,
+      );
+    }
+  }
+
+  private spawnAyaDashBurst(x: number, y: number): void {
+    this.emitParticle(x + 8, y, -40, 0, 22, 0, 0, 0.32, '#fef08a', '#ef4444', 'ring', 0, 0.94);
+    const colors = ['#ef4444', '#f97316', '#facc15', '#dc2626'];
+    for (let i = 0; i < 16; i++) {
+      this.emitParticle(
+        x + (Math.random() * 18 - 9),
+        y + (Math.random() * 24 - 12),
+        -220 - Math.random() * 180,
+        (Math.random() - 0.5) * 130,
+        5.5 + Math.random() * 3.8,
+        Math.random() * Math.PI * 2,
+        (Math.random() - 0.5) * 14,
+        0.48 + Math.random() * 0.3,
+        colors[i % colors.length],
+        '#fde68a',
+        i % 3 === 0 ? 'windRibbon' : 'maple',
+        45,
+        0.96,
+      );
+    }
+  }
+
+  private spawnReimuBarrierBurst(x: number, y: number): void {
+    this.emitParticle(x, y, 0, 0, 26, 0, 0, 0.45, '#fff1f2', '#e11d48', 'ring', 0, 1);
+    const colors = ['#fff5f5', '#fb7185', '#e11d48', '#fde047'];
+    for (let i = 0; i < 20; i++) {
+      const a = (i / 20) * Math.PI * 2 + Math.random() * 0.15;
+      const spd = 120 + Math.random() * 175;
+      this.emitParticle(
+        x,
+        y,
+        Math.cos(a) * spd,
+        Math.sin(a) * spd,
+        5.8 + Math.random() * 3.2,
+        a,
+        (Math.random() - 0.5) * 10,
+        0.52 + Math.random() * 0.34,
+        colors[i % colors.length],
+        '#dc2626',
+        i % 2 === 0 ? 'talisman' : 'sakura',
+        65,
+        0.95,
+      );
+    }
+  }
+
+  private spawnFreezeBurst(x: number, y: number): void {
+    this.emitParticle(x, y, 0, 0, 28, 0, 0, 0.52, '#bae6fd', '#38bdf8', 'frostRing', 0, 1);
+    const colors = ['#ffffff', '#e0f2fe', '#7dd3fc', '#38bdf8'];
+    for (let i = 0; i < 20; i++) {
+      const a = (i / 20) * Math.PI * 2 + Math.random() * 0.2;
+      const spd = 90 + Math.random() * 160;
+      this.emitParticle(
+        x,
+        y,
+        Math.cos(a) * spd,
+        Math.sin(a) * spd,
+        5.2 + Math.random() * 4.0,
+        Math.random() * Math.PI,
+        (Math.random() - 0.5) * 7,
+        0.65 + Math.random() * 0.4,
+        colors[i % colors.length],
+        '#38bdf8',
+        i % 2 === 0 ? 'iceCrystal' : 'snowflake',
+        24,
+        0.95,
+      );
+    }
+  }
+
+  private spawnPipeShatterBurst(
+    x: number,
+    y: number,
+    style: 'bamboo' | 'torii',
+    source: 'aya' | 'reimu',
+  ): void {
+    const shardKind: ParticleKind = style === 'bamboo' ? 'bambooShard' : 'toriiShard';
+    const shardColors =
+      style === 'bamboo'
+        ? ['#4ade80', '#22c55e', '#86efac', '#15803d']
+        : ['#ef4444', '#f87171', '#f5c542', '#b91c1c'];
+
+    this.emitParticle(
+      x,
+      y,
+      0,
+      0,
+      20,
+      0,
+      0,
+      0.32,
+      source === 'aya' ? '#fde047' : '#fda4af',
+      '#ffffff',
+      'ring',
+      0,
+      1,
+    );
+
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2 + (Math.random() - 0.5) * 0.35;
+      const spd = 110 + Math.random() * 195;
+      const isCharAccent = i % 4 === 0;
+      this.emitParticle(
+        x + (Math.random() * 34 - 17),
+        y + (Math.random() * 48 - 24),
+        Math.cos(a) * spd + (source === 'aya' ? 75 : 0),
+        Math.sin(a) * spd - 45,
+        6.5 + Math.random() * 4.5,
+        Math.random() * Math.PI * 2,
+        (Math.random() - 0.5) * 14,
+        0.52 + Math.random() * 0.34,
+        isCharAccent ? (source === 'aya' ? '#f97316' : '#fff1f2') : shardColors[i % shardColors.length],
+        '#fde047',
+        isCharAccent ? (source === 'aya' ? 'maple' : 'talisman') : shardKind,
+        310,
+        0.97,
+      );
+    }
+  }
+
+  private spawnDanmakuShatterBurst(
+    x: number,
+    y: number,
+    color: DanmakuColor,
+    source: 'aya' | 'reimu',
+  ): void {
+    const ringCol = color === 'scarlet' ? '#fb7185' : '#fde047';
+    this.emitParticle(x, y, 0, 0, 16, 0, 0, 0.3, ringCol, '#ffffff', 'ring', 0, 1);
+
+    const cols =
+      color === 'scarlet'
+        ? ['#ffffff', '#fda4af', '#f43f5e', '#fde047']
+        : ['#ffffff', '#fef08a', '#facc15', '#fb923c'];
+
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2 + Math.random() * 0.25;
+      const spd = 95 + Math.random() * 145;
+      this.emitParticle(
+        x,
+        y,
+        Math.cos(a) * spd,
+        Math.sin(a) * spd,
+        4.6 + Math.random() * 3.2,
+        a,
+        (Math.random() - 0.5) * 11,
+        0.42 + Math.random() * 0.24,
+        cols[i % cols.length],
+        '#ffffff',
+        i % 3 === 0 ? (source === 'aya' ? 'maple' : 'talisman') : 'starBurst',
+        70,
+        0.94,
+      );
+    }
+  }
+
   private updateParticlesAndPopups(dt: number): void {
     const pool = this.state.particles;
     let count = this.state.particleCount;
@@ -1132,6 +1806,10 @@ class FlappyEngine implements GameInstance {
       s.stars[i].prevX = s.stars[i].x;
       s.stars[i].prevY = s.stars[i].y;
     }
+    for (let i = 0; i < s.danmaku.length; i++) {
+      s.danmaku[i].prevX = s.danmaku[i].x;
+      s.danmaku[i].prevY = s.danmaku[i].y;
+    }
   }
 
   private stepSimulation(dt: number): void {
@@ -1139,6 +1817,18 @@ class FlappyEngine implements GameInstance {
       this.scorePopTimer -= dt;
       if (this.scorePopTimer <= 0) {
         this.scoreLiveEl.classList.remove('pop');
+      }
+    }
+    if (this.grazePopTimer > 0) {
+      this.grazePopTimer -= dt;
+      if (this.grazePopTimer <= 0) {
+        this.grazeBadgeEl.classList.remove('pop');
+      }
+    }
+    if (this.skillNudgeTimer > 0) {
+      this.skillNudgeTimer -= dt;
+      if (this.skillNudgeTimer <= 0) {
+        this.skillPillEl.classList.remove('not-ready');
       }
     }
 
@@ -1161,6 +1851,9 @@ class FlappyEngine implements GameInstance {
     if (this.state.phaseBannerTimer > 0) {
       this.state.phaseBannerTimer = Math.max(0, this.state.phaseBannerTimer - dt);
     }
+    if (this.state.spellBannerTimer > 0) {
+      this.state.spellBannerTimer = Math.max(0, this.state.spellBannerTimer - dt);
+    }
     if (this.gameOverGuardTimer > 0) {
       this.gameOverGuardTimer = Math.max(0, this.gameOverGuardTimer - dt);
     }
@@ -1169,20 +1862,60 @@ class FlappyEngine implements GameInstance {
       return;
     }
 
-    // Subtle impact hitstop freeze frame on crash
+    // Subtle impact hitstop freeze frame on crash or heroic Deathbomb
     if (this.hitstopTimer > 0) {
       this.hitstopTimer -= dt;
       this.updateParticlesAndPopups(dt * 0.35);
       return;
     }
 
-    this.state.elapsed += dt;
+    // Active skill timers advance in real time
+    const wasSkillActive = this.isSkillActive();
+    const wasDashing = this.state.ayaDashTimer > 0;
+    if (this.state.ayaDashTimer > 0) {
+      this.state.ayaDashTimer = Math.max(0, this.state.ayaDashTimer - dt);
+      if (this.state.ayaDashTimer === 0 && wasDashing) {
+        // Gentle upward lift at end of Aya's dash so player exits cleanly
+        this.state.player.vy = -105;
+      }
+    }
+    if (this.state.cirnoFreezeTimer > 0) {
+      this.state.cirnoFreezeTimer = Math.max(0, this.state.cirnoFreezeTimer - dt);
+    }
+    if (this.state.reimuBarrierTimer > 0) {
+      this.state.reimuBarrierTimer = Math.max(0, this.state.reimuBarrierTimer - dt);
+    }
+    if (wasSkillActive) {
+      this.updateSkillHud();
+    }
+
+    // Bullet-Time Slow-Mo scaling during Cirno's Perfect Freeze (~45%)
+    const isFrozen = this.state.cirnoFreezeTimer > 0;
+    const isDashing = this.state.ayaDashTimer > 0;
+    const worldDt = isFrozen ? dt * PHYSICS.CIRNO_TIME_SCALE : dt;
+
+    this.state.elapsed += worldDt;
     const player = this.state.player;
     player.orbAngle += dt * 3.9;
     player.wingBoost = Math.max(0, player.wingBoost - dt * 3.6);
     player.flapGlow = Math.max(0, player.flapGlow - dt * 3.2);
     player.determinedTimer = Math.max(0, player.determinedTimer - dt);
-    player.scarfWave += dt * (11.5 + (this.state.speed - PHYSICS.BASE_SPEED) * 0.06);
+    player.grazeFlash = Math.max(0, player.grazeFlash - dt * 4.8);
+    if (player.invincibleTimer > 0) {
+      player.invincibleTimer = Math.max(0, player.invincibleTimer - dt);
+    }
+    player.scarfWave +=
+      dt * (11.5 + (this.state.speed - PHYSICS.BASE_SPEED) * 0.06 + (isDashing ? 12 : 0));
+
+    // Fade Aya dash afterimages
+    for (let i = this.state.afterimages.length - 1; i >= 0; i--) {
+      const img = this.state.afterimages[i];
+      img.x -= this.state.speed * (isDashing ? PHYSICS.AYA_DASH_SPEED_MULT : 1.0) * worldDt;
+      img.alpha -= dt * 3.1;
+      if (img.alpha <= 0) {
+        this.state.afterimages.splice(i, 1);
+      }
+    }
 
     // Natural subtle anime blinking
     if (player.blinkDuration > 0) {
@@ -1234,50 +1967,102 @@ class FlappyEngine implements GameInstance {
     if (this.state.phase === 'playing') {
       const diff = this.getDifficultyParams(this.state.score);
       this.state.speed += (diff.speed - this.state.speed) * Math.min(1, dt * 3.2);
-      this.state.scrollDistance += this.state.speed * dt;
 
-      // Vertical physics
-      player.vy = Math.min(PHYSICS.MAX_FALL_SPEED, player.vy + PHYSICS.GRAVITY * dt);
-      player.y += player.vy * dt;
+      const moveSpeed = isDashing ? this.state.speed * PHYSICS.AYA_DASH_SPEED_MULT : this.state.speed;
+      this.state.scrollDistance += moveSpeed * worldDt;
 
-      // Soft ceiling clamp so player cannot fly above pipes
-      const ceilingY = player.radius + 5;
-      if (player.y < ceilingY) {
-        player.y = ceilingY;
-        if (player.vy < 0) player.vy = 0;
-      }
+      // Vertical physics (Aya dash locks horizontal flight; Cirno Perfect Freeze slows gravity & motion via worldDt)
+      if (isDashing) {
+        player.vy *= Math.pow(0.76, dt * 60);
+        player.y = clamp(
+          player.y + player.vy * dt,
+          player.radius + 10,
+          PLAYABLE_HEIGHT - player.radius - 10,
+        );
+        player.rotation += (-0.06 - player.rotation) * Math.min(1, dt * 18);
+        player.rotVelocity = 0;
+        player.wingPhase += dt * 28;
 
-      // Critically-damped spring pitch angle: snappy upward lift, graceful nose-dive curve
-      let targetRot: number;
-      if (player.vy < 65) {
-        targetRot = -0.42;
+        this.afterimageTimer += dt;
+        if (this.afterimageTimer >= 0.032) {
+          this.afterimageTimer = 0;
+          this.state.afterimages.push({
+            x: player.x,
+            y: player.y,
+            rotation: player.rotation,
+            alpha: 0.72,
+            character: 'aya',
+          });
+          this.spawnFlapBurst(player.x - 12, player.y + 2, 'aya', 2, false);
+        }
       } else {
-        const diveT = clamp((player.vy - 65) / (PHYSICS.MAX_FALL_SPEED - 65), 0, 1);
-        targetRot = -0.42 + (diveT * diveT * 0.68 + diveT * 0.32) * 1.78;
+        player.vy = Math.min(PHYSICS.MAX_FALL_SPEED, player.vy + PHYSICS.GRAVITY * worldDt);
+        player.y += player.vy * worldDt;
+
+        // Soft ceiling clamp so player cannot fly above pipes
+        const ceilingY = player.radius + 5;
+        if (player.y < ceilingY) {
+          player.y = ceilingY;
+          if (player.vy < 0) player.vy = 0;
+        }
+
+        // Critically-damped spring pitch angle: snappy upward lift, graceful nose-dive curve
+        let targetRot: number;
+        if (player.vy < 65) {
+          targetRot = -0.42;
+        } else {
+          const diveT = clamp((player.vy - 65) / (PHYSICS.MAX_FALL_SPEED - 65), 0, 1);
+          targetRot = -0.42 + (diveT * diveT * 0.68 + diveT * 0.32) * 1.78;
+        }
+        const omega = targetRot < player.rotation ? 22 : 11.5;
+        const rotAccel =
+          omega * omega * (targetRot - player.rotation) - 2 * omega * player.rotVelocity;
+        player.rotVelocity += rotAccel * worldDt;
+        player.rotation = clamp(player.rotation + player.rotVelocity * worldDt, -0.56, 1.44);
+
+        // Articulated wing cadence
+        player.wingPhase += worldDt * (player.vy < 70 ? 19.5 : 9.2);
+
+        // Ambient themed character trail while flying
+        this.trailTimer += dt;
+        if (this.trailTimer >= 0.14) {
+          this.trailTimer = 0;
+          this.spawnFlapBurst(player.x - 14, player.y + 3, this.state.character, 1, false);
+        }
       }
-      const omega = targetRot < player.rotation ? 22 : 11.5;
-      const rotAccel = omega * omega * (targetRot - player.rotation) - 2 * omega * player.rotVelocity;
-      player.rotVelocity += rotAccel * dt;
-      player.rotation = clamp(player.rotation + player.rotVelocity * dt, -0.56, 1.44);
 
-      // Articulated wing cadence (energetic on ascent, graceful flutter on dive)
-      player.wingPhase += dt * (player.vy < 70 ? 19.5 : 9.2);
-
-      // Ambient themed character trail while flying
-      this.trailTimer += dt;
-      if (this.trailTimer >= 0.14) {
-        this.trailTimer = 0;
-        this.spawnFlapBurst(player.x - 14, player.y + 3, this.state.character, 1, false);
+      // Cirno Perfect Freeze ambient crystalline sparkles
+      if (isFrozen) {
+        this.freezeFrostTimer += dt;
+        if (this.freezeFrostTimer >= 0.1) {
+          this.freezeFrostTimer = 0;
+          this.emitParticle(
+            Math.random() * STAGE_WIDTH,
+            Math.random() * PLAYABLE_HEIGHT,
+            -26 - Math.random() * 24,
+            12 + Math.random() * 18,
+            3.8 + Math.random() * 3.4,
+            Math.random() * Math.PI,
+            (Math.random() - 0.5) * 3,
+            0.75 + Math.random() * 0.4,
+            '#e0f2fe',
+            '#7dd3fc',
+            Math.random() < 0.5 ? 'snowflake' : 'iceCrystal',
+            6,
+            0.99,
+          );
+        }
       }
 
       // Move pipes & score checks
       for (let i = 0; i < this.state.pipes.length; i++) {
         const pipe = this.state.pipes[i];
-        pipe.x -= this.state.speed * dt;
+        pipe.x -= moveSpeed * worldDt;
         if (!pipe.passed && pipe.x + pipe.width * 0.5 < player.x) {
           pipe.passed = true;
           this.state.pipesCleared++;
           this.audio.playScore();
+          this.addSpirit(PHYSICS.PIPE_SPIRIT);
           this.addScore(1, player.x + 16, player.y - 24, '+1', '#fffef0');
         }
       }
@@ -1294,22 +2079,39 @@ class FlappyEngine implements GameInstance {
         this.spawnPipeAt(nextX, lastPipe ?? null);
       }
 
-      // Update collectibles & pickup checks
+      // Update collectibles & Reimu magnetic pull + pickup checks
+      const isReimu = this.state.character === 'reimu';
       for (let i = this.state.stars.length - 1; i >= 0; i--) {
         const s = this.state.stars[i];
-        s.x -= this.state.speed * dt;
+        s.x -= moveSpeed * worldDt;
+
+        // Reimu passive: magnetic pull on nearby P-points / faith stars!
+        if (isReimu && !s.collected) {
+          const mdx = player.x - s.x;
+          const mdy = player.y - s.y;
+          const distSq = mdx * mdx + mdy * mdy;
+          const magnetR = PHYSICS.REIMU_MAGNET_RADIUS;
+          if (distSq > 1 && distSq < magnetR * magnetR) {
+            const dist = Math.sqrt(distSq);
+            const pullSpeed = 210 + (1 - dist / magnetR) * 420;
+            s.x += (mdx / dist) * pullSpeed * worldDt;
+            s.baseY += (mdy / dist) * pullSpeed * worldDt;
+          }
+        }
+
         s.y = s.baseY + Math.sin(this.state.elapsed * 4.4 + s.bobPhase) * 6.5;
-        s.spin += dt * 2.4;
+        s.spin += worldDt * 2.4;
 
         if (!s.collected) {
           const dx = player.x - s.x;
           const dy = player.y - s.y;
-          const collectR = player.radius + s.radius + 5.5;
+          const collectR = PHYSICS.HITBOX_RADIUS + s.radius + 5.5;
           if (dx * dx + dy * dy <= collectR * collectR) {
             s.collected = true;
             this.state.starsCollected++;
             this.audio.playStar();
             this.spawnStarBurst(s.x, s.y, s.kind);
+            this.addSpirit(PHYSICS.STAR_SPIRIT);
             const label = s.kind === 'power' ? 'P +2!' : '★ +2!';
             const color = s.kind === 'power' ? '#fde047' : '#7dd3fc';
             this.addScore(2, s.x, s.y - 12, label, color);
@@ -1321,18 +2123,54 @@ class FlappyEngine implements GameInstance {
         }
       }
 
-      // Ground collision
+      // Update Incident Danmaku Orbs
+      for (let i = this.state.danmaku.length - 1; i >= 0; i--) {
+        const orb = this.state.danmaku[i];
+        orb.x -= (moveSpeed + orb.vx) * worldDt;
+        orb.y = clamp(
+          orb.baseY + Math.sin(this.state.elapsed * orb.freqY + orb.phase) * orb.ampY,
+          36,
+          PLAYABLE_HEIGHT - 36,
+        );
+        if (orb.shattered || orb.x < -50) {
+          this.state.danmaku.splice(i, 1);
+        }
+      }
+
+      // Collisions & Skill Shattering
+      let survivedFrame = true;
+      const capOver = PHYSICS.PIPE_CAP_OVERHANG;
+      const capH = PHYSICS.PIPE_CAP_HEIGHT;
+
+      // 1. Ground collision
       if (player.y + player.radius >= PLAYABLE_HEIGHT) {
-        player.y = PLAYABLE_HEIGHT - player.radius;
-        this.triggerCrash();
-      } else {
-        // Forgiving inset circle-vs-AABB pipe collision
-        const grace = 2.5;
+        if (isDashing) {
+          player.y = PLAYABLE_HEIGHT - player.radius - 2;
+          player.vy = 0;
+        } else if (player.invincibleTimer > 0) {
+          player.y = PLAYABLE_HEIGHT - player.radius - 2;
+          player.vy = -250;
+        } else if (this.state.character === 'reimu' && this.state.spiritGauge >= 100) {
+          player.y = PLAYABLE_HEIGHT - player.radius - 4;
+          player.vy = PHYSICS.FLAP_VELOCITY * 0.92;
+          this.activateReimuBarrier(true);
+        } else {
+          player.y = PLAYABLE_HEIGHT - player.radius;
+          this.triggerCrash();
+          survivedFrame = false;
+        }
+      }
+
+      // 2. Pipe collisions (or Aya dash shattering!)
+      if (survivedFrame) {
+        const grace = isDashing ? 0 : 2.5;
+        const checkRadius = isDashing ? player.radius + 10 : player.radius;
+
         for (let i = 0; i < this.state.pipes.length; i++) {
           const pipe = this.state.pipes[i];
           if (
-            pipe.x + pipe.width + PHYSICS.PIPE_CAP_OVERHANG + 4 < player.x - player.radius ||
-            pipe.x - PHYSICS.PIPE_CAP_OVERHANG - 4 > player.x + player.radius
+            pipe.x + pipe.width + capOver + 6 < player.x - checkRadius ||
+            pipe.x - capOver - 6 > player.x + checkRadius
           ) {
             continue;
           }
@@ -1341,54 +2179,178 @@ class FlappyEngine implements GameInstance {
           const bottomY = pipe.gapY + pipe.gapHeight * 0.5;
           const bottomH = Math.max(0, PLAYABLE_HEIGHT - bottomY);
 
-          const capOver = PHYSICS.PIPE_CAP_OVERHANG;
-          const capH = PHYSICS.PIPE_CAP_HEIGHT;
+          const hitTop =
+            !pipe.topShattered &&
+            topH > 0 &&
+            (circleIntersectsRect(
+              player.x,
+              player.y,
+              checkRadius,
+              pipe.x + grace,
+              0,
+              pipe.width - grace * 2,
+              Math.max(0, topH - grace),
+            ) ||
+              circleIntersectsRect(
+                player.x,
+                player.y,
+                checkRadius,
+                pipe.x - capOver + grace,
+                Math.max(0, topH - capH + grace),
+                pipe.width + capOver * 2 - grace * 2,
+                Math.max(0, Math.min(capH, topH) - grace * 2),
+              ));
 
-          const hitTopShaft = circleIntersectsRect(
-            player.x,
-            player.y,
-            player.radius,
-            pipe.x + grace,
-            0,
-            pipe.width - grace * 2,
-            Math.max(0, topH - grace),
-          );
-          const hitTopCap = circleIntersectsRect(
-            player.x,
-            player.y,
-            player.radius,
-            pipe.x - capOver + grace,
-            Math.max(0, topH - capH + grace),
-            pipe.width + capOver * 2 - grace * 2,
-            Math.max(0, Math.min(capH, topH) - grace * 2),
-          );
-          const hitBottomShaft = circleIntersectsRect(
-            player.x,
-            player.y,
-            player.radius,
-            pipe.x + grace,
-            bottomY + grace,
-            pipe.width - grace * 2,
-            Math.max(0, bottomH - grace),
-          );
-          const hitBottomCap = circleIntersectsRect(
-            player.x,
-            player.y,
-            player.radius,
-            pipe.x - capOver + grace,
-            bottomY + grace,
-            pipe.width + capOver * 2 - grace * 2,
-            Math.max(0, Math.min(capH, bottomH) - grace * 2),
-          );
+          const hitBottom =
+            !pipe.bottomShattered &&
+            bottomH > 0 &&
+            (circleIntersectsRect(
+              player.x,
+              player.y,
+              checkRadius,
+              pipe.x + grace,
+              bottomY + grace,
+              pipe.width - grace * 2,
+              Math.max(0, bottomH - grace),
+            ) ||
+              circleIntersectsRect(
+                player.x,
+                player.y,
+                checkRadius,
+                pipe.x - capOver + grace,
+                bottomY + grace,
+                pipe.width + capOver * 2 - grace * 2,
+                Math.max(0, Math.min(capH, bottomH) - grace * 2),
+              ));
 
-          if (hitTopShaft || hitTopCap || hitBottomShaft || hitBottomCap) {
-            this.triggerCrash();
-            break;
+          if (hitTop || hitBottom) {
+            if (isDashing) {
+              if (hitTop) this.shatterPipePillar(pipe, true, 'aya');
+              if (hitBottom) this.shatterPipePillar(pipe, false, 'aya');
+            } else if (player.invincibleTimer > 0) {
+              // Post-dash or post-Deathbomb invincibility passes safely
+            } else if (this.state.character === 'reimu' && this.state.spiritGauge >= 100) {
+              // Automatic Reimu Deathbomb!
+              this.activateReimuBarrier(true, pipe, hitTop, hitBottom);
+              break;
+            } else {
+              this.triggerCrash();
+              survivedFrame = false;
+              break;
+            }
           }
         }
       }
 
-      this.updateParticlesAndPopups(dt);
+      // 3. Incident Danmaku collisions (or Aya dash shattering!)
+      if (survivedFrame) {
+        for (let i = 0; i < this.state.danmaku.length; i++) {
+          const orb = this.state.danmaku[i];
+          if (orb.shattered) continue;
+          const dx = player.x - orb.x;
+          const dy = player.y - orb.y;
+          const hitR = isDashing
+            ? player.radius + orb.radius + 12
+            : player.radius + orb.radius * 0.72;
+          if (dx * dx + dy * dy < hitR * hitR) {
+            if (isDashing) {
+              this.shatterDanmakuOrb(orb, 'aya');
+            } else if (player.invincibleTimer > 0) {
+              // Invincible passes safely
+            } else if (this.state.character === 'reimu' && this.state.spiritGauge >= 100) {
+              this.activateReimuBarrier(true, undefined, false, false, orb);
+              break;
+            } else {
+              this.triggerCrash();
+              survivedFrame = false;
+              break;
+            }
+          }
+        }
+      }
+
+      // 4. Touhou GRAZE check (only when alive, not dashing, not invincible)
+      if (survivedFrame && !isDashing && player.invincibleTimer <= 0) {
+        const grazeR = PHYSICS.HITBOX_RADIUS + PHYSICS.GRAZE_HALO;
+
+        // Pipe edge grazing (once per top edge & once per bottom edge)
+        for (let i = 0; i < this.state.pipes.length; i++) {
+          const pipe = this.state.pipes[i];
+          if (
+            pipe.x + pipe.width + capOver + grazeR < player.x ||
+            pipe.x - capOver - grazeR > player.x
+          ) {
+            continue;
+          }
+
+          const topH = Math.max(0, pipe.gapY - pipe.gapHeight * 0.5);
+          const bottomY = pipe.gapY + pipe.gapHeight * 0.5;
+          const bottomH = Math.max(0, PLAYABLE_HEIGHT - bottomY);
+
+          if (!pipe.grazedTop && !pipe.topShattered && topH > 0) {
+            const nearTop =
+              circleIntersectsRect(player.x, player.y, grazeR, pipe.x, 0, pipe.width, topH) ||
+              circleIntersectsRect(
+                player.x,
+                player.y,
+                grazeR,
+                pipe.x - capOver,
+                Math.max(0, topH - capH),
+                pipe.width + capOver * 2,
+                Math.min(capH, topH),
+              );
+            if (nearTop) {
+              pipe.grazedTop = true;
+              const sx = clamp(player.x, pipe.x - capOver, pipe.x + pipe.width + capOver);
+              const sy = Math.min(player.y, topH);
+              this.triggerGraze((player.x + sx) * 0.5, (player.y + sy) * 0.5);
+            }
+          }
+
+          if (!pipe.grazedBottom && !pipe.bottomShattered && bottomH > 0) {
+            const nearBottom =
+              circleIntersectsRect(
+                player.x,
+                player.y,
+                grazeR,
+                pipe.x,
+                bottomY,
+                pipe.width,
+                bottomH,
+              ) ||
+              circleIntersectsRect(
+                player.x,
+                player.y,
+                grazeR,
+                pipe.x - capOver,
+                bottomY,
+                pipe.width + capOver * 2,
+                Math.min(capH, bottomH),
+              );
+            if (nearBottom) {
+              pipe.grazedBottom = true;
+              const sx = clamp(player.x, pipe.x - capOver, pipe.x + pipe.width + capOver);
+              const sy = Math.max(player.y, bottomY);
+              this.triggerGraze((player.x + sx) * 0.5, (player.y + sy) * 0.5);
+            }
+          }
+        }
+
+        // Danmaku orb grazing (once per orb)
+        for (let i = 0; i < this.state.danmaku.length; i++) {
+          const orb = this.state.danmaku[i];
+          if (orb.grazed || orb.shattered) continue;
+          const dx = player.x - orb.x;
+          const dy = player.y - orb.y;
+          const gr = grazeR + orb.radius * 0.85;
+          if (dx * dx + dy * dy <= gr * gr) {
+            orb.grazed = true;
+            this.triggerGraze((player.x + orb.x) * 0.5, (player.y + orb.y) * 0.5);
+          }
+        }
+      }
+
+      this.updateParticlesAndPopups(isFrozen ? dt * 0.65 : dt);
       return;
     }
 
@@ -1453,7 +2415,11 @@ class FlappyEngine implements GameInstance {
     this.hitstopTimer = 0;
     this.gameOverGuardTimer = 0;
     this.scorePopTimer = 0;
+    this.grazePopTimer = 0;
+    this.skillNudgeTimer = 0;
     this.trailTimer = 0;
+    this.afterimageTimer = 0;
+    this.freezeFrostTimer = 0;
     this.pipesSpawned = 0;
     this.lastGapY = PHYSICS.PLAYER_START_Y;
     this.lastSkyPhaseId = 'dawn';
@@ -1463,7 +2429,10 @@ class FlappyEngine implements GameInstance {
 
     this.scoreLiveEl.textContent = '0';
     this.scoreLiveEl.classList.remove('pop');
-    this.updatePhasePill();
+    this.grazeBadgeEl.classList.remove('pop');
+    this.skillPillEl.classList.remove('not-ready');
+    this.updateSkillHud();
+    this.updateGrazeHud();
     this.syncOverlays();
     this.notifyHostScore();
   }

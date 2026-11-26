@@ -5,21 +5,21 @@ import { mountFlappyGame } from './engine';
 export const flappyGame: GameMetadata = {
   id: 'flappy',
   title: '幻想乡管道鸟 · 竹林疾飞',
-  subtitle: 'Gensokyo Flappy Aya',
+  subtitle: '擦弹充能 · 三自机符卡疾飞',
   englishTitle: 'Gensokyo Flappy Aya',
   description:
-    '化身射命丸文、博丽灵梦或琪露诺，振翼穿梭迷途竹林与博丽鸟居！收集飘浮的 P 点与信仰星赢取额外加分，随着分数攀升亲历黎明、黄昏直至红魔异变绯月夜空。',
+    '化身射命丸文、博丽灵梦或琪露诺，擦弹竹柱与异变弹幕充能灵力槽，释放幻想风靡冲刺破柱、决死阴阳结界或完美冻结慢动作！',
   controls: [
-    'Space / ↑ / W / 点击或轻触屏幕：振翼飞升',
-    '准备界面：点击下方角色卡切换 射命丸文 / 博丽灵梦 / 琪露诺',
-    'P / Esc：暂停或继续飞行',
-    '结算界面 R / Enter：快速再来一局',
+    'Space / ↑ / W / 点击：振翼飞升',
+    'Shift / E / 右键 / 点击符卡槽：释放自机符卡',
+    '贴近竹柱或异变弹幕擦弹 (GRAZE)：+1 分并快速充能',
+    'P / Esc：暂停 · R / Enter：再来一局',
   ],
   themeColor: '#c82333',
   accentColor: '#f5c542',
   characterName: '射命丸文 / 博丽灵梦 / 琪露诺',
   difficulty: '中等 · 渐进挑战',
-  tags: ['动作躲避', '东方同人', '多角色', '敏捷挑战'],
+  tags: ['动作躲避', '东方同人', '擦弹符卡', '三自机'],
   coverSvg: FLAPPY_COVER_SVG,
   mount: mountFlappyGame,
 };
